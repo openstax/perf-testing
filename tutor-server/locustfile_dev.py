@@ -9,7 +9,6 @@ import json
 from lxml import html
 from locust import HttpLocust, TaskSet  # , task
 from random import choice, random
-from urllib.parse import urlparse, urlunparse
 
 from slimit import ast
 from slimit.parser import Parser
@@ -29,12 +28,6 @@ def init_security_tokens(loc):
     loc.client.headers['X-CSRF-Token'] = csrf_token
     loc.client.headers['X-Requested-With'] = 'XMLHttpRequest'
     loc.client.headers['User-Agent'] = 'Chrome/999.999.99 locust/1.0'
-
-    loc.login_url=res_html.xpath('//a[contains(@href, "login")]/@href')[0]
-
-def login(loc, username, password):
-    res = loc.client.get(loc.login_url)
-    
 
 
 def become_random_user(loc, search=''):
