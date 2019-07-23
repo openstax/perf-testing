@@ -1,57 +1,52 @@
-from locust import HttpLocust, TaskSet
+from realbrowserlocusts import FirefoxLocust, ChromeLocust, PhantomJSLocust
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
 
-from bs4 import BeautifulSoup
+from locust import TaskSet, task
 
-def lookup(l):
-    with l.client.post("/auth/identity/callback", {"login[username_or_email]":"admin",
-                                              "authenticity_token": "cJ+lhaRuDnRCq+N4zbudQ5TGwRzkvIvA5wYvuQMUD3jFHoC9D5bQx44Ak4glSrjWmST4ioJNCxwq1gMNYPOfqg==",
-                                              "utf8": "✓",
-                                              "login[source]": "authenticate",
-                                              "commit": "Log+in"}, catch_response=True) as response:
-        print(response.content)
+platform_url = "https://accounts-dev.openstax.org/"
+login_username = "admin"
+login_password = ""
 
-    # with l.client.get("/profile", catch_response=True) as response:
-    #     print(response.content)
+class LocustUserBehavior(TaskSet):
 
-# def logout(l):
-#     l.client.post("/logout")
-#
-# def index(l):
-#     with l.client.get("/", catch_response=True) as response:
-#         print(response.content)
-#
-# def profile(l):
-#     l.client.get("/profile")
-
-class AccountsTasks(TaskSet):
-
-    # def on_start(self):
-    #     """
-    #     on_start is called when a Locust start before,
-    #     any task is scheduled
-    #     """
-    #     self.login()
-    #
-    # def login(self):
-    #     resp = self.client.get("/login")
-    #     parsed_html = BeautifulSoup(resp.content)
-    #     form_build_id = parsed_html.body.find('input', {'name': 'form_build_id'})['value']
-    #
-    #     self.client.post("/lookup_login", {
-    #         "login[username_or_email]": "admin",
-    #         "form_id": "user_login_form",
-    #         "authenticity_token": "cJ+lhaRuDnRCq+N4zbudQ5TGwRzkvIvA5wYvuQMUD3jFHoC9D5bQx44Ak4glSrjWmST4ioJNCxwq1gMNYPOfqg==",
-    #         "form_build_id": form_build_id,
-    #         "op": "Log in"
-    #     })
-
+    # Functions to Run on Start and End
     def on_start(self):
-        lookup(self)
+        self.client.timed_event_for_locust("Load", "Login Page", self.load_login_page)
+        self.client.timed_event_for_locust("Enter", "Username", self.enter_login_username)
+        self.client.timed_event_for_locust("Enter", "Password", self.enter_login_password)
 
-    # def on_stop(self):
-    #     logout(self)
+    # Helper Functions
+    def load_login_page(self):
+        self.client.get(platform_url+'login')
+        self.client.wait.until(EC.visibility_of_element_located((By.ID, 'login_username_or_email')), "Login field is visible.")
 
-class WebsiteUser(HttpLocust):
-    task_set = AccountsTasks
-    min_wait = 5000
-    max_wait = 9000
+    def enter_login_username(self):
+        login_field = self.client.find_element_by_id('login_username_or_email')
+        login_field.send_keys(login_username)
+
+        self.client.find_element_by_name('commit').click()
+
+        self.client.wait.until(EC.visibility_of_element_located((By.ID, 'login_password')), "Password field is visible.")
+
+    def enter_login_password(self):
+        login_field = self.client.find_element_by_id('login_password')
+        login_field.send_keys(login_password)
+
+        self.client.find_element_by_name('commit').click()
+
+        self.client.wait.until(EC.visibility_of_element_located((By.ID, 'application-body')), "Application body is visible.")
+
+    # Main Tasks        
+    @task(2)
+    def query_api(self):
+        self.client.get(platform_url+'api/user')
+
+class LocustUser(ChromeLocust):
+    host = "not really used"
+    timeout = 30 #in seconds in waitUntil thingies
+    min_wait = 100
+    max_wait = 1000
+    screen_width = 1200
+    screen_height = 600
+    task_set = LocustUserBehavior
