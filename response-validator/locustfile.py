@@ -1,9 +1,13 @@
-# -*- coding: utf-8 -*-
-from __future__ import unicode_literals
-
 from locust import HttpLocust, TaskSet, task
+import os
+import logging
 
-with open('urls.txt') as f:
+logger = logging.getLogger(__name__)
+here = os.path.dirname(os.path.abspath(__file__))
+
+logger.info(here)
+
+with open(os.path.join(here, 'urls.txt')) as f:
     urls = f.readlines()
 
 
