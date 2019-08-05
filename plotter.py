@@ -49,6 +49,12 @@ config = {
                     "key": "current_rps",
                 },
                 {
+                    "color": "blue",
+                    "legend": "number of users",
+                    "marker": "triangle",
+                    "key": "user_count",
+                },
+                {
                     "color": "red",
                     "legend": "failures",
                     "marker": "cross",
@@ -57,8 +63,8 @@ config = {
                 },
             ],
             "xlabel": "Requests count",
-            "ylabel": "RPS/Failures count",
-            "title": "{} RPS/Failures",
+            "ylabel": "RPS/Failures/User count",
+            "title": "{} RPS/Failures/Users",
         },
     ],
     "url": "http://localhost:8089/stats/requests",  # locust json stats url
@@ -107,6 +113,7 @@ def update():
         return
     resp_data = resp.json()
     data = resp_data["stats"][-1]  # Getting "Total" data from locust
+    data["user_count"] = resp_data["user_count"]
     if resp_data["state"] in config["states"]:
         for key, data_source in six.iteritems(data_sources[resp_data["state"]]):
             # adding data from locust to data_source of our graphs
