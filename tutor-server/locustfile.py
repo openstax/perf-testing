@@ -1,109 +1,156 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
-
+import csv
 import logging
+import os
 import json
 
 # from gevent import GreenletExit
 from lxml import html
 from locust import HttpLocust, TaskSet  # , task
 from random import choice, random
-from urllib.parse import urlparse, urlunparse
+from time import sleep
 
-from slimit import ast
-from slimit.parser import Parser
-from slimit.visitors import nodevisitor
+from requests_html import HTML
 
-jsparser = Parser()
 logger = logging.getLogger(__name__)
 
+here = os.path.dirname(os.path.abspath(__file__))
 
-def init_security_tokens(loc):
-    res = loc.client.get('/')
+logger.info(here)
+
+users = {}
+with open(os.path.join(here, "users.csv")) as f:
+    for user in csv.DictReader(f, dialect="unix"):
+        users.setdefault(user["type"], []).append((user["username"], user["password"]))
+
+
+def init_security_tokens(ts):
+    res = ts.client.get("/")
     res_html = html.fromstring(res.text)
     csrf_token = res_html.xpath("//meta[@name='csrf-token']/@content")[0]
     csrf_param = res_html.xpath("//meta[@name='csrf-param']/@content")[0]
-    loc.csrf_token = csrf_token
-    loc.csrf_param = csrf_param
-    loc.client.headers['X-CSRF-Token'] = csrf_token
-    loc.client.headers['X-Requested-With'] = 'XMLHttpRequest'
-    loc.client.headers['User-Agent'] = 'Chrome/999.999.99 locust/1.0'
-
-    loc.login_url=res_html.xpath('//a[contains(@href, "login")]/@href')[0]
-
-def login(loc, username, password):
-    res = loc.client.get(loc.login_url)
-    
+    ts.csrf_token = csrf_token
+    ts.csrf_param = csrf_param
+    ts.client.headers["X-CSRF-Token"] = csrf_token
+    ts.client.headers["X-Requested-With"] = "XMLHttpRequest"
+    # Need Chrome to get past CSRF, and AppleWebKit to get past browser.modern
+    ts.client.headers["User-Agent"] = "Chrome/999.999.99 AppleWebKit/999.99 locust/1.0"
+    ts.locust.login_url = res_html.xpath('//a[contains(@href, "login")]/@href')[0]
 
 
-def become_random_user(loc, search=''):
-    if not (hasattr(loc, 'csrf_param')):
-            init_security_tokens(loc)
-    search_path = ('/accounts/dev/accounts/search?'
-                   'utf8=%E2%9C%93&'
-                   f'search%5Bquery%5D={search}&'
-                   'search%5Btype%5D=Any&commit=Search')
-    res = loc.client.get(search_path, name=f'find {search}')
-    search_res = res.text
-    tree = jsparser.parse(search_res)
-    for node in nodevisitor.visit(tree):
-        if (isinstance(node, ast.ExprStatement)
-            and isinstance(node.expr.identifier, ast.DotAccessor)
-            and node.expr.identifier.node.args[0].value ==
-                '"#search-results"'):
-            result = node.expr.args[0].value
-            user_row = choice(html.fromstring(eval(result)).xpath('//td/a'))
-            user_url = user_row.xpath('./@href')[0]
-            user_id = user_row.xpath('./text()')[0].strip()
-            loc.client.post(user_url, name=f'Become {user_id}',
-                            data={'_method': 'post',
-                                  loc.csrf_param: loc.csrf_token})
-
-            # Now go to frontpage, which should redirect to /dashboard,
-            # and load bootstrap data onto the local session instance
-            dash = loc.client.get('/')
-            h = html.fromstring(dash.text)
-            j = h.xpath('//script[@type="application/json"]/text()')[0]
-            loc.locust.data = json.loads(j)
-            return
+def login(ts, username, password):
+    res = ts.client.get(ts.locust.login_url)
+    res_html = HTML(url=res.url, html=res.text)
+    login_url = res_html._make_absolute(res_html.xpath("((//form)[1])/@action")[0])
+    data = {
+        i.attrs.get("name"): i.attrs.get("value")
+        for i in res_html.xpath("(//form)[1]//input")
+    }
+    data["login[username_or_email]"] = username
+    res = ts.client.post(login_url, data=data)
+    res_html = HTML(url=res.url, html=res.text)
+    login_url = res_html._make_absolute(res_html.xpath("((//form)[1])/@action")[0])
+    data = {
+        i.attrs.get("name"): i.attrs.get("value")
+        for i in res_html.xpath("(//form)[1]//input")
+    }
+    data["login[password]"] = password
+    res = ts.client.post(login_url, data=data)
 
 
-def become_random_student(loc):
-    return become_random_user(loc, 'student')
+def logout(ts):
+    data = {"_method": "delete", "authenticity_token": getattr(ts, "csrf_token", "")}
+    ts.client.headers.pop("X-Requested-With", None)
+    ts.client.post("/accounts/logout", data=data)
 
 
-def become_random_teacher(loc):
-    return become_random_user(loc, 'teacher')
+def become_random_user(ts, usertype=None):
+    if not (hasattr(ts, "csrf_param")):
+        init_security_tokens(ts)
+
+    if usertype is None:
+        username, password = choice([u for utype in users.values() for u in utype])
+    else:
+        username, password = choice(users[usertype])
+
+    login(ts, username, password)
+    dash = ts.client.get("/")
+    h = html.fromstring(dash.text)
+    j = h.xpath(
+        '//body/script[@type="application/json" and @id="tutor-boostrap-data"]/text()'
+    )[0]
+    ts.locust.bootstrap = json.loads(j)
+    return
 
 
-def list_course_ids(loc):
-    return [c['id'] for c in loc.locust.data['courses']]
+def become_random_student(ts):
+    return become_random_user(ts, "student")
 
 
-def index(loc):
-    loc.client.get('/')
+def become_random_teacher(ts):
+    return become_random_user(ts, "teacher")
 
 
-def new_user(loc):
+def list_course_ids(ts):
+    return [c["id"] for c in ts.locust.bootstrap["courses"]]
+
+
+def index(ts):
+    ts.client.get("/")
+
+
+def new_user(ts):
     if random() < 0.1:
-        loc.on_stop()
-        loc.on_start()
+        ts.on_stop()
+        ts.on_start()
 
 
-def visit_course(loc):
-    course_id = choice(list_course_ids(loc))
-    loc.client.get(f'/course/{course_id}')
+def visit_course(ts):
+    course_id = choice(list_course_ids(ts))
+    course_data = ts.client.get(f"/api/courses/{course_id}/dashboard").json()
+    ts.locust.course_data = course_data
+    ts.locust.course_id = course_id
+    ts.client.get(f"/api/courses/{course_id}/guide")
+
+
+def revise_course(ts):
+    visit_course(ts)
+    tasks = ts.locust.course_data["tasks"]
+    tasks_completed_steps = [t for t in tasks if t["completed_steps_count"] > 0]
+    for task in tasks_completed_steps:
+        visit_completed_steps(ts, task["id"])
+
+
+def visit_completed_steps(ts, taskid):
+    course_id = ts.locust.course_id
+    task = ts.client.get(f"/api/tasks/{taskid}", name="/api/tasks/{taskid}").json()
+    if task["type"] == "reading":
+        ts.client.get(f"/api/courses/{course_id}/highlighted_sections",
+                      name="/api/courses/{course_id}/highlighted_sections")
+    stepids = [s["id"] for s in task["steps"] if s["is_completed"]]
+    for stepid in stepids:
+        step = ts.client.get(f"/api/steps/{stepid}", name="/api/steps/{stepid}").json()
+        if step["type"] == "reading":
+            chap, sect = step["chapter_section"]
+            ts.client.get(f"/api/courses/{course_id}/notes/{chap}.{sect}",
+                          name="/api/courses/{course_id}/notes/{chap}.{sect}")
+        sleep(60)
+
+
+def updates(ts):
+    ts.client.get('/api/updates')
 
 
 class StudentBehavior(TaskSet):
-    tasks = {index: 1, visit_course: 4, new_user: 1}
+    tasks = {index: 1, visit_course: 1, revise_course: 7, new_user: 1, updates: 1}
 
     def on_start(self):
         become_random_student(self)
 
     def on_stop(self):
-        self.client.get('/accounts/logout')
+        logout(self)
 
 
 class TeacherBehavior(TaskSet):
@@ -113,16 +160,14 @@ class TeacherBehavior(TaskSet):
         become_random_teacher(self)
 
     def on_stop(self):
-        self.client.get('/accounts/logout')
+        logout(self)
 
 
 class StudentUser(HttpLocust):
     task_set = StudentBehavior
-    stop_timeout = 1200
     weight = 9
 
 
 class TeacherUser(HttpLocust):
     task_set = TeacherBehavior
-    stop_timeout = 1200
     weight = 1
