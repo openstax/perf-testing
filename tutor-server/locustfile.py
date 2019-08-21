@@ -41,7 +41,7 @@ def init_security_tokens(ts):
 
 
 def login(ts, username, password):
-    res = ts.client.get(ts.locust.login_url)
+    res = ts.client.get(ts.locust.login_url, name="login url")
     res_html = HTML(url=res.url, html=res.text)
     login_url = res_html._make_absolute(res_html.xpath("((//form)[1])/@action")[0])
     data = {
@@ -71,7 +71,9 @@ def become_random_user(ts, usertype=None):
         init_security_tokens(ts)
 
     if usertype is None:
-        username, password = choice([u for utype in users.values() for u in utype])
+        usertype, username, password = choice(
+            [(utype,) + u for utype, utup in users.items() for u in utup]
+        )
     else:
         username, password = choice(users[usertype])
 
@@ -82,6 +84,7 @@ def become_random_user(ts, usertype=None):
         '//body/script[@type="application/json" and @id="tutor-boostrap-data"]/text()'
     )[0]
     ts.locust.bootstrap = json.loads(j)
+    ts.locust.user_type = usertype
     return
 
 
@@ -112,7 +115,11 @@ def visit_course(ts):
     course_data = ts.client.get(f"/api/courses/{course_id}/dashboard").json()
     ts.locust.course_data = course_data
     ts.locust.course_id = course_id
-    ts.client.get(f"/api/courses/{course_id}/guide")
+    if ts.locust.user_type == "teacher":
+        guide_name = "teacher_guide"
+    else:
+        guide_name = "guide"
+    ts.client.get(f"/api/courses/{course_id}/{guide_name}")
 
 
 def revise_course(ts):
@@ -127,39 +134,91 @@ def visit_completed_steps(ts, taskid):
     course_id = ts.locust.course_id
     task = ts.client.get(f"/api/tasks/{taskid}", name="/api/tasks/{taskid}").json()
     if task["type"] == "reading":
-        ts.client.get(f"/api/courses/{course_id}/highlighted_sections",
-                      name="/api/courses/{course_id}/highlighted_sections")
+        ts.client.get(
+            f"/api/courses/{course_id}/highlighted_sections",
+            name="/api/courses/{course_id}/highlighted_sections",
+        )
     stepids = [s["id"] for s in task["steps"] if s["is_completed"]]
     for stepid in stepids:
         step = ts.client.get(f"/api/steps/{stepid}", name="/api/steps/{stepid}").json()
         if step["type"] == "reading":
             chap, sect = step["chapter_section"]
-            ts.client.get(f"/api/courses/{course_id}/notes/{chap}.{sect}",
-                          name="/api/courses/{course_id}/notes/{chap}.{sect}")
+            ts.client.get(
+                f"/api/courses/{course_id}/notes/{chap}.{sect}",
+                name="/api/courses/{course_id}/notes/{chap}.{sect}",
+            )
         sleep(60)
 
 
 def updates(ts):
-    ts.client.get('/api/updates')
+    ts.client.get("/api/updates")
+
+
+def ui_settings(ts):
+    ts.client.get("/api/ui_settings")
+
+
+def course_roster(ts):
+    if not (hasattr(ts.locust, "course_id")):
+        visit_course(ts)
+    ts.client.get(f"/api/courses/{ts.locust.course_id}/roster", name="roster")
+
+
+def course_performance(ts):
+    if not (hasattr(ts.locust, "course_id")):
+        visit_course(ts)
+    ts.client.get(
+        f"/api/courses/{ts.locust.course_id}/performance", name="student scores"
+    )
+
+
+def course_spreadsheet(ts):
+    if not (hasattr(ts.locust, "course_id")):
+        visit_course(ts)
+    job_url = ts.client.post(
+        f"/api/courses/{ts.locust.course_id}/performance/export",
+        name="student scores export",
+    ).json()["job"]
+    job = ts.client.get(job_url, name="student scores export job").json()
+    while job["status"] in ("queued", "started"):
+        sleep(1)
+        job = ts.client.get(job_url, name="student scores export job").json()
+    ts.client.get(job["url"], name="student scores spreadsheet")
 
 
 class StudentBehavior(TaskSet):
-    tasks = {index: 1, visit_course: 1, revise_course: 7, new_user: 1, updates: 1}
+    tasks = {
+        index: 1,
+        visit_course: 1,
+        revise_course: 7,
+        new_user: 1,
+        updates: 1,
+        ui_settings: 1,
+    }
 
     def on_start(self):
         become_random_student(self)
 
     def on_stop(self):
+        sleep(random() * 5)
         logout(self)
 
 
 class TeacherBehavior(TaskSet):
-    tasks = {index: 1, visit_course: 4}
+    tasks = {
+        index: 1,
+        visit_course: 1,
+        course_roster: 2,
+        course_performance: 5,
+        course_spreadsheet: 1,
+        ui_settings: 1,
+    }
 
     def on_start(self):
         become_random_teacher(self)
 
     def on_stop(self):
+        sleep(random() * 5)
         logout(self)
 
 
@@ -171,3 +230,5 @@ class StudentUser(HttpLocust):
 class TeacherUser(HttpLocust):
     task_set = TeacherBehavior
     weight = 1
+    min_wait = 1000
+    max_wait = 5000
