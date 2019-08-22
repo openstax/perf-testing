@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
+import csv
 import logging
 
 from lxml import html
@@ -30,23 +31,26 @@ def login_user(loc):
 
     res = loc.client.get('/')
 
-    for username, password in users.items():
-        res_html = html.fromstring(res.text)
-        login_url = res_html.xpath('//form')[0].action
-        data = {i.name:i.value for i in res_html.xpath("//form//input")}
+    with open('users.csv') as csv_file:
+        csv_reader = csv.DictReader(csv_file)
 
-        data['login[username_or_email]'] = username
+        for row in csv_reader:
+            res_html = html.fromstring(res.text)
+            login_url = res_html.xpath('//form')[0].action
+            data = {i.name:i.value for i in res_html.xpath("//form//input")}
 
-        res2 = loc.client.post(login_url, data=data)
-        res2_html = html.fromstring(res2.text)
-        login2_url = res2_html.xpath('//form')[0].action
+            data['login[username_or_email]'] = row['email']
 
-        data2 = {i.name: i.value for i in res2_html.xpath("//form//input")}
-        data2['login[password]'] = password
-        res3 = loc.client.post(login2_url, data=data2)
+            res2 = loc.client.post(login_url, data=data)
+            res2_html = html.fromstring(res2.text)
+            login2_url = res2_html.xpath('//form')[0].action
 
-        res4 = loc.client.get('/api/user')
-        print(res4.json())
+            data2 = {i.name: i.value for i in res2_html.xpath("//form//input")}
+            data2['login[password]'] = row['password']
+            res3 = loc.client.post(login2_url, data=data2)
+
+            res4 = loc.client.get('/api/user')
+            print(res4.json())
 
 def user_api(loc):
     loc.client.get('/api/user')
