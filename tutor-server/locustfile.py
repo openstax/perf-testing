@@ -11,6 +11,7 @@ from lxml import html
 from locust import HttpLocust, TaskSet  # , task
 from random import choice, random
 from time import sleep
+from urllib.parse import urlencode
 
 from requests_html import HTML
 
@@ -111,15 +112,21 @@ def new_user(ts):
 
 
 def visit_course(ts):
-    course_id = choice(list_course_ids(ts))
-    course_data = ts.client.get(f"/api/courses/{course_id}/dashboard").json()
+    course = choice(ts.locust.bootstrap["courses"])
+    ts.locust.course = course
+    course_id = course["id"]
+    course_data = ts.client.get(
+        f"/api/courses/{course_id}/dashboard", name="/api/courses/{course_id}/dashboard"
+    ).json()
     ts.locust.course_data = course_data
-    ts.locust.course_id = course_id
     if ts.locust.user_type == "teacher":
         guide_name = "teacher_guide"
     else:
         guide_name = "guide"
-    ts.client.get(f"/api/courses/{course_id}/{guide_name}")
+    ts.client.get(
+        f"/api/courses/{course_id}/{guide_name}",
+        name=f"/api/courses/{{course_id}}/{guide_name}",
+    )
 
 
 def revise_course(ts):
@@ -131,7 +138,7 @@ def revise_course(ts):
 
 
 def visit_completed_steps(ts, taskid):
-    course_id = ts.locust.course_id
+    course_id = ts.locust.course["id"]
     task = ts.client.get(f"/api/tasks/{taskid}", name="/api/tasks/{taskid}").json()
     if task["type"] == "reading":
         ts.client.get(
@@ -154,47 +161,74 @@ def updates(ts):
     ts.client.get("/api/updates")
 
 
-def ui_settings(ts):
-    ts.client.get("/api/ui_settings")
-
-
 def course_roster(ts):
-    if not (hasattr(ts.locust, "course_id")):
+    if not (hasattr(ts.locust, "course")):
         visit_course(ts)
-    ts.client.get(f"/api/courses/{ts.locust.course_id}/roster", name="roster")
+    ts.client.get(f"/api/courses/{ts.locust.course['id']}/roster", name="roster")
 
 
 def course_performance(ts):
-    if not (hasattr(ts.locust, "course_id")):
+    if not (hasattr(ts.locust, "course")):
         visit_course(ts)
     ts.client.get(
-        f"/api/courses/{ts.locust.course_id}/performance", name="student scores"
+        f"/api/courses/{ts.locust.course['id']}/performance", name="student scores"
     )
 
 
+def course_offerings(ts):
+    ts.client.get("/api/offerings")
+
+
 def course_spreadsheet(ts):
-    if not (hasattr(ts.locust, "course_id")):
+    if not (hasattr(ts.locust, "course")):
         visit_course(ts)
     job_url = ts.client.post(
-        f"/api/courses/{ts.locust.course_id}/performance/export",
+        f"/api/courses/{ts.locust.course['id']}/performance/export",
         name="student scores export",
     ).json()["job"]
     job = ts.client.get(job_url, name="student scores export job").json()
     while job["status"] in ("queued", "started"):
         sleep(1)
         job = ts.client.get(job_url, name="student scores export job").json()
-    ts.client.get(job["url"], name="student scores spreadsheet")
+    if job["status"] == "succeeded":
+        ts.client.get(job["url"], name="student scores spreadsheet")
+    else:
+        logger.info(job)
+
+
+def course_question_library(ts):
+    if not (hasattr(ts.locust, "course")):
+        visit_course(ts)
+    ecosystem_id = ts.locust.course["ecosystem_id"]
+    course_id = ts.locust.course["id"]
+    readings = ts.client.get(
+        f"/api/ecosystems/{ecosystem_id}/readings",
+        name="/api/ecosystems/{ecosystem_id}/readings",
+    ).json()
+    book = readings[0]
+    # Pick on chapter worth of pages at random
+    query = {
+        "course_id": course_id,
+        "page_ids[]": flatten_to_pages(choice(book["children"])),
+    }
+    ts.client.get(
+        f"/api/ecosystems/{ecosystem_id}/exercises?" + urlencode(query, doseq=True),
+        name="/api/ecosystems/{ecosystem_id}/exercises",
+    )
+
+
+def flatten_to_pages(container):
+    pages = []
+    for child in container["children"]:
+        if "children" in child:
+            pages.extend(flatten_to_pages(child))
+        else:
+            pages.append(child["id"])
+    return pages
 
 
 class StudentBehavior(TaskSet):
-    tasks = {
-        index: 1,
-        visit_course: 1,
-        revise_course: 7,
-        new_user: 1,
-        updates: 1,
-        ui_settings: 1,
-    }
+    tasks = {index: 1, visit_course: 1, revise_course: 7, new_user: 1, updates: 1}
 
     def on_start(self):
         become_random_student(self)
@@ -211,7 +245,8 @@ class TeacherBehavior(TaskSet):
         course_roster: 2,
         course_performance: 5,
         course_spreadsheet: 1,
-        ui_settings: 1,
+        course_question_library: 1,
+        course_offerings: 1,
     }
 
     def on_start(self):
