@@ -4,6 +4,7 @@ from __future__ import unicode_literals
 import csv
 import logging
 
+from random import choice, random
 from lxml import html
 from locust import HttpLocust, TaskSet
 from slimit.parser import Parser
@@ -11,6 +12,8 @@ from slimit.parser import Parser
 jsparser = Parser()
 logger = logging.getLogger(__name__)
 
+with open("users.csv") as f:
+    users = list(csv.reader(f, dialect="unix"))[1:] #skipping headers
 
 def init_security_tokens(loc):
     res = loc.client.get('/')
@@ -24,33 +27,35 @@ def init_security_tokens(loc):
     loc.client.headers['User-Agent'] = 'Chrome/999.999.99 locust/1.0'
 
 
-def login_user(loc):
-    users = {} #fill in users here (until we have a csv), like so: {'username':'password',}
-    if not (hasattr(loc, 'csrf_param')):
+def login(loc, username, password):
+    res = loc.client.get('/')
+    res_html = html.fromstring(res.text)
+    login_url = res_html.xpath('//form')[0].action
+    data = {i.name:i.value for i in res_html.xpath("//form//input")}
+
+    data['login[username_or_email]'] = username
+
+    res2 = loc.client.post(login_url, data=data)
+    res2_html = html.fromstring(res2.text)
+    login2_url = res2_html.xpath('//form')[0].action
+
+    data2 = {i.name: i.value for i in res2_html.xpath("//form//input")}
+    data2['login[password]'] = password
+    res3 = loc.client.post(login2_url, data=data2)
+
+    #res4 = loc.client.get('/api/user')
+
+
+def become_random_user(loc):
+    if not (hasattr(loc, "csrf_param")):
         init_security_tokens(loc)
 
-    res = loc.client.get('/')
+    _, username, password = choice(users)
 
-    with open('users.csv') as csv_file:
-        csv_reader = csv.DictReader(csv_file)
+    login(loc, username, password)
 
-        for row in csv_reader:
-            res_html = html.fromstring(res.text)
-            login_url = res_html.xpath('//form')[0].action
-            data = {i.name:i.value for i in res_html.xpath("//form//input")}
+    return
 
-            data['login[username_or_email]'] = row['email']
-
-            res2 = loc.client.post(login_url, data=data)
-            res2_html = html.fromstring(res2.text)
-            login2_url = res2_html.xpath('//form')[0].action
-
-            data2 = {i.name: i.value for i in res2_html.xpath("//form//input")}
-            data2['login[password]'] = row['password']
-            res3 = loc.client.post(login2_url, data=data2)
-
-            res4 = loc.client.get('/api/user')
-            print(res4.json())
 
 def user_api(loc):
     loc.client.get('/api/user')
@@ -59,11 +64,12 @@ def user_api(loc):
 def index(loc):
     loc.client.get('/')
 
+
 class UserBehavior(TaskSet):
-    tasks = {index: 1, user_api: 5 }
+    tasks = {user_api: 1}
 
     def on_start(self):
-        login_user(self)
+        become_random_user(self)
 
     def on_stop(self):
         self.client.get('/accounts/logout')
@@ -71,5 +77,3 @@ class UserBehavior(TaskSet):
 
 class GeneralUser(HttpLocust):
     task_set = UserBehavior
-    stop_timeout = 1200
-    weight = 9
