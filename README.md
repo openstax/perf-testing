@@ -44,8 +44,6 @@ Enter target number of users, and how many users to add per minute, and hit "run
 
 Monitor the progress of the test on both the Locust and Bokeh tabs.
 
-
-
 ## Why `Locust`?
 
 `Locust` is a "load tests as code" framework. Historically, most major

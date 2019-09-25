@@ -1,0 +1,3 @@
+realbrowserlocusts==0.4
+selenium==3.141.0
+locustio==0.11.0
