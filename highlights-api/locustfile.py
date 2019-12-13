@@ -5,27 +5,13 @@ import random
 from random import choice
 from string import ascii_uppercase
 
-USERS = [
-  (str(uuid.uuid4())),
-  (str(uuid.uuid4())),
-  (str(uuid.uuid4())),
-  (str(uuid.uuid4())),
-  (str(uuid.uuid4())),
-  (str(uuid.uuid4())),
-  (str(uuid.uuid4())),
-  (str(uuid.uuid4())),
-  (str(uuid.uuid4())),
-  (str(uuid.uuid4())),
-  (str(uuid.uuid4()))
-]
-
 COLORS = ['yellow', 'green', 'blue', 'purple', 'pink']
 
 logger = logging.getLogger(__name__)
 
 class ApiBehavior(TaskSet):
   def on_start(self):
-    self.user_uuid = random.choice(USERS)
+    self.user_uuid = str(uuid.uuid4())
     self.source_ids = {}
     self.source_ids[str(uuid.uuid4())] = []
     self.source_ids[str(uuid.uuid4())] = []
