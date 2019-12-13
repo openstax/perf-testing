@@ -86,13 +86,24 @@ class ApiBehavior(TaskSet):
     if res.status_code != 200:
       logger.error("get_summary {}".format(res.text))
 
+  @task(5)
+  def get_multiple(self):
+    self.client.headers['loadtest_client_uuid'] = self.user_uuid
+
+    all_source_ids = self.source_ids.keys()
+    source_ids = ",".join(random.sample(all_source_ids, random.randint(2, min(5, len(all_source_ids)))))
+    color = random.choice(COLORS)
+    res = self.client.get("/api/v0/highlights?source_ids={}&source_type=openstax_page&color={}".format(source_ids, color), name="get highlights (multiple)")
+    if res.status_code != 200:
+      logger.error("get {}".format(res.text))
+
   # 2 highlights within one page (source), one book (scope) per add task
   @task(2)
   def add_highlight(self):
     self.client.headers['loadtest_client_uuid'] = self.user_uuid
     source_id = random.choice(self.source_ids.keys())
     highlight_ids = self.source_ids[source_id]
-    do_annotation = random.choice([1,2,3,4]) < 2
+    do_annotation = random.randint(0, 4) < 2
     num_existing = len(highlight_ids);
     i = random.randint(0, num_existing)
 
