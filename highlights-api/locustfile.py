@@ -40,8 +40,6 @@ class ApiBehavior(TaskSet):
     return ''.join(choice(ascii_uppercase) for i in range(length))
 
   def post_highlight(self, id, source_id, prev_highlight_id, next_highlight_id, randomly_add_note):
-    logger.info('post_highlight. User {}, id {}, source_id {}, prev_highlight_id {}, scope_id {}'.format(self.user_uuid, id, source_id, prev_highlight_id, self.scope_id))
-
     post_params = {
       "highlight": {
         "id": id,
@@ -64,8 +62,10 @@ class ApiBehavior(TaskSet):
     if next_highlight_id != None:
       post_params['highlight']['next_highlight_id'] = next_highlight_id
 
-    res = self.client.post("/api/v0/highlights", json=post_params)
-    logger.info("post_note {}".format(res))
+    res = self.client.post("/api/v0/highlights", json=post_params, name="create with annotation" if randomly_add_note else "create")
+    
+    if res.status_code != 201:
+      logger.error("post_note {}".format(res.text))
 
   @task(10)
   def get(self):
@@ -73,16 +73,18 @@ class ApiBehavior(TaskSet):
 
     source_id = random.choice(self.source_ids.keys())
     color = random.choice(COLORS)
-    res = self.client.get("/api/v0/highlights?source_ids={}&source_type=openstax_page&color={}".format(source_id, color))
-    logger.info("get {}".format(res))
+    res = self.client.get("/api/v0/highlights?source_ids={}&source_type=openstax_page&color={}".format(source_id, color), name="get highlights")
+    if res.status_code != 200:
+      logger.error("get {}".format(res.text))
 
   @task(4)
   def get_summary(self):
     self.client.headers['loadtest_client_uuid'] = self.user_uuid
 
     color = random.choice(COLORS)
-    res = self.client.get("/api/v0/highlights/summary?source_type=openstax_page&color={}".format(color))
-    logger.info("get_summary {}".format(res))
+    res = self.client.get("/api/v0/highlights/summary?source_type=openstax_page&color={}".format(color), name="get summary")
+    if res.status_code != 200:
+      logger.error("get_summary {}".format(res.text))
 
   # 2 highlights within one page (source), one book (scope) per add task
   @task(2)
@@ -90,21 +92,16 @@ class ApiBehavior(TaskSet):
     self.client.headers['loadtest_client_uuid'] = self.user_uuid
     source_id = random.choice(self.source_ids.keys())
     highlight_ids = self.source_ids[source_id]
+    do_annotation = random.choice([1,2,3,4]) < 2
+    num_existing = len(highlight_ids);
+    i = random.randint(0, num_existing)
 
     new_hl_id = str(uuid.uuid4())
-    num_hls = len(highlight_ids)
-    if num_hls == 0:
-      self.post_highlight(new_hl_id, source_id, None, None, random.choice([1,2,3,4]) < 2)
-      self.source_ids[source_id].append(new_hl_id)
-    elif num_hls == 1:
-      self.post_highlight(new_hl_id, source_id, highlight_ids[0], None, random.choice([1,2,3,4]) < 2)
-      self.source_ids[source_id].append(new_hl_id)
-    else:
-      i = random.randint(1, len(highlight_ids)-1)
-      prev_highlight_id = highlight_ids[i-1]
-      next_highlight_id = highlight_ids[i]
-      self.post_highlight(new_hl_id, source_id, prev_highlight_id, next_highlight_id, random.choice([1,2,3,4]) < 2)
-      self.source_ids[source_id].insert(i, new_hl_id)
+    prev_highlight_id = highlight_ids[i-1] if i > 0 else None
+    next_highlight_id = highlight_ids[i] if num_existing > 0 and i < num_existing else None
+
+    self.post_highlight(new_hl_id, source_id, prev_highlight_id, next_highlight_id, do_annotation)
+    self.source_ids[source_id].insert(i, new_hl_id)
 
 class HighlightsApiTest(HttpLocust):
   task_set = ApiBehavior
