@@ -53,6 +53,8 @@ class ApiBehavior(TaskSet):
     if res.status_code != 201:
       logger.error("post_note {}".format(res.text))
 
+    return res.status_code == 201
+
   @task(10)
   def get(self):
     self.client.headers['loadtest_client_uuid'] = self.user_uuid
@@ -97,8 +99,10 @@ class ApiBehavior(TaskSet):
     prev_highlight_id = highlight_ids[i-1] if i > 0 else None
     next_highlight_id = highlight_ids[i] if num_existing > 0 and i < num_existing else None
 
-    self.post_highlight(new_hl_id, source_id, prev_highlight_id, next_highlight_id, do_annotation)
-    self.source_ids[source_id].insert(i, new_hl_id)
+    success = self.post_highlight(new_hl_id, source_id, prev_highlight_id, next_highlight_id, do_annotation)
+
+    if success:
+      self.source_ids[source_id].insert(i, new_hl_id)
 
 class HighlightsApiTest(HttpLocust):
   task_set = ApiBehavior
