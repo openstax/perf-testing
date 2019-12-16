@@ -58,8 +58,8 @@ class ApiBehavior(TaskSet):
     self.client.headers['loadtest_client_uuid'] = self.user_uuid
 
     source_id = random.choice(self.source_ids.keys())
-    color = random.choice(COLORS)
-    res = self.client.get("/api/v0/highlights?source_ids={}&source_type=openstax_page&color={}".format(source_id, color), name="get highlights")
+    colors = ','.join(random.sample(COLORS, random.randint(1, len(COLORS))))
+    res = self.client.get("/api/v0/highlights?source_ids={}&source_type=openstax_page&colors={}".format(source_id, colors), name="get highlights")
     if res.status_code != 200:
       logger.error("get {}".format(res.text))
 
@@ -67,8 +67,8 @@ class ApiBehavior(TaskSet):
   def get_summary(self):
     self.client.headers['loadtest_client_uuid'] = self.user_uuid
 
-    color = random.choice(COLORS)
-    res = self.client.get("/api/v0/highlights/summary?source_type=openstax_page&color={}".format(color), name="get summary")
+    colors = ','.join(random.sample(COLORS, random.randint(1, len(COLORS))))
+    res = self.client.get("/api/v0/highlights/summary?source_type=openstax_page&colors={}".format(colors), name="get summary")
     if res.status_code != 200:
       logger.error("get_summary {}".format(res.text))
 
@@ -78,8 +78,8 @@ class ApiBehavior(TaskSet):
 
     all_source_ids = self.source_ids.keys()
     source_ids = ",".join(random.sample(all_source_ids, random.randint(2, min(5, len(all_source_ids)))))
-    color = random.choice(COLORS)
-    res = self.client.get("/api/v0/highlights?source_ids={}&source_type=openstax_page&color={}".format(source_ids, color), name="get highlights (multiple)")
+    colors = ','.join(random.sample(COLORS, random.randint(1, len(COLORS))))
+    res = self.client.get("/api/v0/highlights?source_ids={}&source_type=openstax_page&colors={}".format(source_ids, colors), name="get highlights (multiple)")
     if res.status_code != 200:
       logger.error("get {}".format(res.text))
 
