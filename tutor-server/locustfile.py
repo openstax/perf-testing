@@ -36,6 +36,10 @@ def init_security_tokens(ts):
     ts.csrf_param = csrf_param
     ts.client.headers["X-CSRF-Token"] = csrf_token
     ts.client.headers["X-Requested-With"] = "XMLHttpRequest"
+    ts.client.headers["Accept"] = (
+        "text/html,application/xhtml+xml,application/xml,"
+        "application/json,text/plain,*/*"
+    )
     # Need Chrome to get past CSRF, and AppleWebKit to get past browser.modern
     ts.client.headers["User-Agent"] = "Chrome/999.999.99 AppleWebKit/999.99 locust/1.0"
     ts.locust.login_url = res_html.xpath('//a[contains(@href, "login")]/@href')[0]
@@ -43,22 +47,48 @@ def init_security_tokens(ts):
 
 def login(ts, username, password):
     res = ts.client.get(ts.locust.login_url, name="login url")
-    res_html = HTML(url=res.url, html=res.text)
-    login_url = res_html._make_absolute(res_html.xpath("((//form)[1])/@action")[0])
+    res = submit_form(ts, res, data={"login[username_or_email]": username})
+    res = submit_form(ts, res, data={"login[password]": password})
+
+    # If password has expired, will redirect here
+    if res.url.endswith("/password/reset"):
+        res = reset_password(ts, res, password)
+
+    # If there are terms to sign, will cycle back here until all are signed
+    while "terms" in res.url:
+        res = submit_form(ts, res)
+
+
+def reset_password(ts, res, password):
     data = {
-        i.attrs.get("name"): i.attrs.get("value")
-        for i in res_html.xpath("(//form)[1]//input")
+        "set_password[password]": password,
+        "set_password[password_confirmation]": password,
     }
-    data["login[username_or_email]"] = username
-    res = ts.client.post(login_url, data=data)
+    return submit_form(ts, res, data)
+
+
+def submit_form(ts, res, data={}, form_index=1):
     res_html = HTML(url=res.url, html=res.text)
-    login_url = res_html._make_absolute(res_html.xpath("((//form)[1])/@action")[0])
-    data = {
-        i.attrs.get("name"): i.attrs.get("value")
-        for i in res_html.xpath("(//form)[1]//input")
-    }
-    data["login[password]"] = password
-    res = ts.client.post(login_url, data=data)
+    form_action = res_html.xpath(f"((//form)[{form_index}])/@action")[0]
+    if form_action:
+        form_url = res_html._make_absolute(form_action)
+    else:
+        form_url = res.url
+
+    form_data = {}
+    for i in res_html.xpath(f"(//form)[{form_index}]//input"):
+        name = i.attrs.get("name")
+        val = i.attrs.get("value")
+        if name in form_data:
+            if isinstance(form_data[name], list):
+                form_data[name].append(val)
+            else:
+                form_data[name] = [form_data[name], val]
+        else:
+            form_data[name] = val
+    form_data.update(data)
+    res = ts.client.post(form_url, data=form_data)
+    return res
 
 
 def logout(ts):
@@ -84,9 +114,18 @@ def become_random_user(ts, usertype=None):
     j = h.xpath(
         '//body/script[@type="application/json" and @id="tutor-boostrap-data"]/text()'
     )[0]
-    ts.locust.bootstrap = json.loads(j)
+    bootstrap = json.loads(j)
+    if bootstrap["user"]["terms_signatures_needed"]:
+        agree_to_tutor_terms(ts)
+    ts.locust.bootstrap = bootstrap
     ts.locust.user_type = usertype
     return
+
+
+def agree_to_tutor_terms(ts):
+    terms = ts.client.get("/api/terms")
+    term_ids = [str(t["id"]) for t in terms.json()]
+    ts.client.put("/api/terms/" + ",".join(term_ids))
 
 
 def become_random_student(ts):
@@ -129,32 +168,56 @@ def visit_course(ts):
     )
 
 
-def revise_course(ts):
+def revise_course(ts, steptime=60):
     visit_course(ts)
     tasks = ts.locust.course_data["tasks"]
-    tasks_completed_steps = [t for t in tasks if t["completed_steps_count"] > 0]
+    tasks_completed_steps = [
+        t
+        for t in tasks
+        if t["type"] in ("homework", "reading") and t["completed_steps_count"] > 0
+    ]
     for task in tasks_completed_steps:
-        visit_completed_steps(ts, task["id"])
+        visit_completed_steps(ts, task["id"], steptime=steptime)
 
 
-def visit_completed_steps(ts, taskid):
-    course_id = ts.locust.course["id"]
+def visit_completed_steps(ts, taskid, steptime=60):
+    ecosystem_id = ts.locust.couse["ecosystem_id"]
+    book_uuid = ts.locust.course["ecosystem_book_uuid"]
     task = ts.client.get(f"/api/tasks/{taskid}", name="/api/tasks/{taskid}").json()
     if task["type"] == "reading":
         ts.client.get(
-            f"/api/courses/{course_id}/highlighted_sections",
-            name="/api/courses/{course_id}/highlighted_sections",
+            f"/api/ecosystems/{ecosystem_id}/readings",
+            name="/api/ecosystems/{ecosystem_id}/readings",
+        )
+        ts.client.get(
+            f"/api/books/{book_uuid}/highlighted_sections",
+            name="/api/books/{book_uuid}/highlighted_sections",
         )
     stepids = [s["id"] for s in task["steps"] if s["is_completed"]]
     for stepid in stepids:
         step = ts.client.get(f"/api/steps/{stepid}", name="/api/steps/{stepid}").json()
         if step["type"] == "reading":
-            chap, sect = step["chapter_section"]
-            ts.client.get(
-                f"/api/courses/{course_id}/notes/{chap}.{sect}",
-                name="/api/courses/{course_id}/notes/{chap}.{sect}",
-            )
-        sleep(60)
+            for page in task["related_content"]:
+                ts.client.get(
+                    f"/api/pages/{page['uuid']}/notes",
+                    name="/api/pages/{page_uuid}/notes",
+                )
+
+        sleep(steptime)
+
+
+def work_course_task(ts, taskid, steptime=300):
+    course_id = ts.locust.course["id"]
+    task = ts.client.get(f"/api/tasks/{taskid}", name="/api/tasks/{taskid}").json()
+    tasks_noncompleted_steps = []
+
+
+def work_reading_step(ts, step_id):
+    pass
+
+
+def work_exercise_step(ts, step_id):
+    pass
 
 
 def updates(ts):
@@ -206,7 +269,7 @@ def course_question_library(ts):
         name="/api/ecosystems/{ecosystem_id}/readings",
     ).json()
     book = readings[0]
-    # Pick on chapter worth of pages at random
+    # Pick one chapter worth of pages at random
     query = {
         "course_id": course_id,
         "page_ids[]": flatten_to_pages(choice(book["children"])),
@@ -228,7 +291,7 @@ def flatten_to_pages(container):
 
 
 class StudentBehavior(TaskSet):
-    tasks = {index: 1, visit_course: 1, revise_course: 7, new_user: 1, updates: 1}
+    tasks = {index: 1, visit_course: 1, revise_course: 7, updates: 1}
 
     def on_start(self):
         become_random_student(self)
@@ -260,6 +323,8 @@ class TeacherBehavior(TaskSet):
 class StudentUser(HttpLocust):
     task_set = StudentBehavior
     weight = 9
+    min_wait = 1000
+    max_wait = 5000
 
 
 class TeacherUser(HttpLocust):
