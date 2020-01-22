@@ -8,20 +8,22 @@ from string import ascii_uppercase
 logger = logging.getLogger(__name__)
 
 highlights = []
+loading = False
 user_uuid = str(uuid.uuid4())
 scope_id = str(uuid.uuid4())
 source_id = str(uuid.uuid4())
 
 def load_highlights(loc):
-  if len(highlights) >= 1000:
-    return
+  global highlights, loading, user_uuid, scope_id, source_id
+
   prev_highlight_id = None
   next_highlight_id = None
-  for i in range(1, 1000):
+
+  for i in range(1, 50):
     new_hl_id = str(uuid.uuid4())
     post_params = {
       "highlight": {
-        "id": id,
+        "id": new_hl_id,
         "source_type": "openstax_page",
         "source_id": source_id,
         "anchor": "id301",
@@ -33,25 +35,45 @@ def load_highlights(loc):
     }
     if prev_highlight_id != None:
       post_params['highlight']['prev_highlight_id'] = prev_highlight_id
-    res = loc.client.post("/api/v0/highlights", json=post_params)
+      logger.info("perft: for hl {}, setting prev {}".format(new_hl_id, prev_highlight_id))
+
+    loc.client.headers['loadtest_client_uuid'] = user_uuid
+    res = loc.client.post("/api/v0/highlights", json=post_params, name="create")
     if res.status_code == 201:
+      logger.info("perft: created new highlight {}, prev_highlight_id {}".format(new_hl_id, prev_highlight_id))
       prev_highlight_id = new_hl_id
       highlights.append(new_hl_id)
-  logger.info("load_highlights: adding {} new highlights".format(len(highlights)))
+    else:
+      logger.info("perft: failed to created new highlight {}, prev_highlight_id {}".format(new_hl_id, prev_highlight_id))
+
+  logger.info("perft: load_highlights: adding {} new highlights".format(len(highlights)))
 
 class DeadlockBehavior(TaskSet):
   def on_start(self):
-    load_highlights(self)
-    logger.info("on_start user {}, scope {}, source {}".format(user_uuid, scope_id, source_id))
+    global highlights, loading, user_uuid, scope_id, source_id
+
+    logger.info("perft: on_start user {}, scope {}, source {} about to try load_highlights".format(user_uuid, scope_id, source_id))
+
+    if not loading:
+      loading = True
+      load_highlights(self)
+
+    logger.info("perft: on_start finished for user {}, scope {}, source {}".format(user_uuid, scope_id, source_id))
 
   @task(1)
   def delete(self):
+    global highlights, loading, user_uuid, scope_id, source_id
+
+    if len(highlights) == 0:
+      logger.info("perft: delete found no highlights to delete")
+      return
+
     self.client.headers['loadtest_client_uuid'] = user_uuid
 
-    hl_id = highlights.pop(1)
+    hl_id = highlights.pop()
     res = self.client.delete("/api/v0/highlights/{}".format(hl_id), name="delete highlights")
     if res.status_code != 200:
-      logger.error("delete {}".format(res.text))
+      logger.error("perft: delete {}".format(res.text))
 
 class HighlightsApiTest(HttpLocust):
   task_set = DeadlockBehavior
