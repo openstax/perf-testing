@@ -7,7 +7,6 @@ import os
 import json
 
 # from gevent import GreenletExit
-from lxml import html
 from locust import HttpLocust, TaskSet  # , task
 from random import choice, random
 from time import sleep
@@ -29,12 +28,15 @@ with open(os.path.join(here, "users.csv")) as f:
 
 def init_security_tokens(ts):
     res = ts.client.get("/")
-    res_html = html.fromstring(res.text)
-    csrf_token = res_html.xpath("//meta[@name='csrf-token']/@content")[0]
-    csrf_param = res_html.xpath("//meta[@name='csrf-param']/@content")[0]
-    ts.csrf_token = csrf_token
-    ts.csrf_param = csrf_param
-    ts.client.headers["X-CSRF-Token"] = csrf_token
+
+    res_html = HTML(url=res.url, html=res.text)
+    login_url = res_html.xpath('//a[contains(@href, "login")]/@href')
+    if len(login_url) > 0:
+        ts.locust.login_url = login_url[0]
+
+    update_security_tokens(ts, res)
+
+    # Parts of Rails insist on this
     ts.client.headers["X-Requested-With"] = "XMLHttpRequest"
     ts.client.headers["Accept"] = (
         "text/html,application/xhtml+xml,application/xml,"
@@ -42,10 +44,22 @@ def init_security_tokens(ts):
     )
     # Need Chrome to get past CSRF, and AppleWebKit to get past browser.modern
     ts.client.headers["User-Agent"] = "Chrome/999.999.99 AppleWebKit/999.99 locust/1.0"
-    ts.locust.login_url = res_html.xpath('//a[contains(@href, "login")]/@href')[0]
+
+
+def update_security_tokens(ts, res=None):
+    if res is None:
+        res = ts.client.get("/")
+    res_html = HTML(url=res.url, html=res.text)
+    csrf_token = res_html.xpath("//meta[@name='csrf-token']/@content")[0]
+    csrf_param = res_html.xpath("//meta[@name='csrf-param']/@content")[0]
+    ts.csrf_token = csrf_token
+    ts.csrf_param = csrf_param
+    ts.client.headers["X-CSRF-Token"] = csrf_token
 
 
 def login(ts, username, password):
+    if not (hasattr(ts, "csrf_param")):
+        init_security_tokens(ts)
     res = ts.client.get(ts.locust.login_url, name="login url")
     res = submit_form(ts, res, data={"login[username_or_email]": username})
     res = submit_form(ts, res, data={"login[password]": password})
@@ -58,20 +72,90 @@ def login(ts, username, password):
     while "terms" in res.url:
         res = submit_form(ts, res)
 
+    update_security_tokens(ts, res)
+    return res
+
 
 def reset_password(ts, res, password):
     data = {
         "set_password[password]": password,
         "set_password[password_confirmation]": password,
     }
-    return submit_form(ts, res, data)
+    res = submit_form(ts, res, data)
+    # One more click-through
+    if res.url.endswith("reset_success"):
+        return submit_form(ts, res)
+    else:
+        return res
+
+
+def logout(ts):
+    data = {"_method": "delete", "authenticity_token": getattr(ts, "csrf_token", "")}
+    ts.client.headers.pop("X-Requested-With", None)
+    ts.client.post("/accounts/logout", data=data)
+    for item in ["bootstrap", "user_type", "course", "course_data"]:
+        delattr(ts.locust, item)
+    for item in ["csrf_token", "csrf_attribute"]:
+        delattr(ts, item)
+
+
+def become_random_user(ts, usertype=None):
+    if usertype is None:
+        usertype, username, password = choice(
+            [(utype,) + utup for utype, ulist in users.items() for utup in ulist]
+        )
+    else:
+        username, password = choice(users[usertype])
+
+    become_user(ts, username, password)
+    ts.locust.user_type = usertype
+
+
+def become_user(ts, username, password):
+    dash = login(ts, username, password)
+    res_html = HTML(url=dash.url, html=dash.text)
+    j = res_html.xpath(
+        '//body/script[@type="application/json" and @id="tutor-boostrap-data"]/text()'
+    )
+    if len(j) > 0:
+        bootstrap = json.loads(j[0])
+    if bootstrap["user"]["terms_signatures_needed"]:
+        agree_to_tutor_terms(ts)
+    ts.locust.bootstrap = bootstrap
+    ts.locust.username = username
+    return
+
+
+def agree_to_tutor_terms(ts):
+    terms = ts.client.get("/api/terms")
+    term_ids = [str(t["id"]) for t in terms.json()]
+    ts.client.put("/api/terms/" + ",".join(term_ids))
+
+
+def become_random_student(ts):
+    return become_random_user(ts, "student")
+
+
+def become_random_teacher(ts):
+    return become_random_user(ts, "teacher")
+
+
+def new_user(ts):
+    if random() < 0.1:
+        ts.on_stop()
+        ts.on_start()
+
+
+# Common routines
 
 
 def submit_form(ts, res, data={}, form_index=1):
+    update_security_tokens(ts, res)
     res_html = HTML(url=res.url, html=res.text)
-    form_action = res_html.xpath(f"((//form)[{form_index}])/@action")[0]
-    if form_action:
-        form_url = res_html._make_absolute(form_action)
+    form_action = res_html.xpath(f"((//form)[{form_index}])/@action")
+    # _make_absolute strips last path component if action == ""
+    if form_action and form_action != [""]:
+        form_url = res_html._make_absolute(form_action[0])
     else:
         form_url = res.url
 
@@ -91,63 +175,19 @@ def submit_form(ts, res, data={}, form_index=1):
     return res
 
 
-def logout(ts):
-    data = {"_method": "delete", "authenticity_token": getattr(ts, "csrf_token", "")}
-    ts.client.headers.pop("X-Requested-With", None)
-    ts.client.post("/accounts/logout", data=data)
+def index(ts):
+    ts.client.get("/")
 
 
-def become_random_user(ts, usertype=None):
-    if not (hasattr(ts, "csrf_param")):
-        init_security_tokens(ts)
-
-    if usertype is None:
-        usertype, username, password = choice(
-            [(utype,) + u for utype, utup in users.items() for u in utup]
-        )
-    else:
-        username, password = choice(users[usertype])
-
-    login(ts, username, password)
-    dash = ts.client.get("/")
-    h = html.fromstring(dash.text)
-    j = h.xpath(
-        '//body/script[@type="application/json" and @id="tutor-boostrap-data"]/text()'
-    )[0]
-    bootstrap = json.loads(j)
-    if bootstrap["user"]["terms_signatures_needed"]:
-        agree_to_tutor_terms(ts)
-    ts.locust.bootstrap = bootstrap
-    ts.locust.user_type = usertype
-    return
-
-
-def agree_to_tutor_terms(ts):
-    terms = ts.client.get("/api/terms")
-    term_ids = [str(t["id"]) for t in terms.json()]
-    ts.client.put("/api/terms/" + ",".join(term_ids))
-
-
-def become_random_student(ts):
-    return become_random_user(ts, "student")
-
-
-def become_random_teacher(ts):
-    return become_random_user(ts, "teacher")
+def updates(ts):
+    ts.client.get("/api/updates")
 
 
 def list_course_ids(ts):
     return [c["id"] for c in ts.locust.bootstrap["courses"]]
 
 
-def index(ts):
-    ts.client.get("/")
-
-
-def new_user(ts):
-    if random() < 0.1:
-        ts.on_stop()
-        ts.on_start()
+# Student Routines
 
 
 def visit_course(ts):
@@ -206,22 +246,129 @@ def visit_completed_steps(ts, taskid, steptime=60):
         sleep(steptime)
 
 
-def work_course_task(ts, taskid, steptime=300):
+def work_course_next_task(ts, steptime=300, number_steps=None):
+    visit_course(ts)
     course_id = ts.locust.course["id"]
-    task = ts.client.get(f"/api/tasks/{taskid}", name="/api/tasks/{taskid}").json()
-    tasks_noncompleted_steps = []
+    if not (hasattr(ts.locust, "tasks_to_work")):
+        tasks = ts.locust.course_data["tasks"]
+        tasks_not_completed = [
+            t
+            for t in tasks
+            if t["type"] in ("homework", "reading")
+            and t["completed_steps_count"] < t["steps_count"]
+        ]
+        tasks_not_completed.sort(key=lambda t: t["opens_at"])
+        ts.locust.tasks_to_work = tasks_not_completed
+
+    task = ts.locust.tasks_to_work.pop()
+    logger.debug(f"Working task {task['title']}")
+    work_task_steps(ts, task, steptime=steptime, number_steps=number_steps)
+    # refresh course data local copy
+    course_data = ts.client.get(
+        f"/api/courses/{course_id}/dashboard", name="/api/courses/{course_id}/dashboard"
+    ).json()
+    ts.locust.course_data = course_data
 
 
-def work_reading_step(ts, step_id):
+def work_task_steps(ts, task, steptime=300, number_steps=None):
+    course = ts.locust.course
+    ts.client.get(f"/api/ecosystems/{course['ecosystem_id']}/readings").json()
+    ts.client.get(
+        f"/api/books/{course['ecosystem_book_uuid']}/highlighted_sections"
+    ).json()
+    tt = ts.client.get(
+        f"/api/tasks/{task['id']}", name="/api/tasks/{task['id']}"
+    ).json()
+
+    placeholders = False
+    for step in tt["steps"][:number_steps]:
+        if step["is_completed"] is False:
+            if step["type"] == "placeholder":
+                placeholders = True
+                continue
+            logger.debug(f"Working {step['type']} step: {step['id']}")
+            step_methods[step["type"]](ts, step["id"], steptime)
+
+    # Update task steps - get personalized and spaced practice
+    if placeholders and number_steps is None:
+        tt = ts.client.get(
+            f"/api/tasks/{task['id']}", name="/api/tasks/{task['id']}"
+        ).json()
+        for step in tt["steps"][:number_steps]:
+            if step["is_completed"] is False:
+                logger.debug(f"Working {step['type']} step: {step['id']}")
+                step_methods[step["type"]](ts, step["id"], steptime)
+
+
+def work_reading_step(ts, step_id, steptime=300):
+    step = ts.client.get(f"/api/steps/{step_id}").json()
+    for page in step["related_content"]:
+        ts.client.get(f"/api/pages/{page['uuid']}/notes")
+    # Consider variable sleeptime for differemt types/lengths of steps
+    # FIXME do something about fetching videos, ans sleeping the length of them
+    if "iframe" in step["html"]:
+        html = HTML(html=step["html"])
+        for frame in html.xpath("//iframe/@src"):
+            ts.client.get(frame)
+    sleep(steptime)
+    res = ts.client.patch(
+        f"/api/steps/{step_id}", json={"is_completed": True, "response_validation": {}}
+    )
+    logger.debug(res)
+
+
+def work_exercise_step(ts, step_id, steptime=300):
+    step = ts.client.get(f"/api/steps/{step_id}").json()
+    # Consider variable sleeptime for different types/lengths of steps
+    data = {"is_completed": True}
+    for question in step["content"]["questions"]:
+        if "free-response" in question["formats"]:
+            # FIXME generate responses from … where?
+            # FIXME a certian percentage should get invalid and retry
+            free_response = "This is not a valid response"
+            response_validation = ts.client.get(
+                f"{ts.locust.bootstrap['response_validation']['url']}"
+                f"?uid={question['id']}&response={free_response}"
+            ).json()
+            data["free_response"] = free_response
+            data["response_validation"] = response_validation
+        else:
+            data["response_validation"] = {}
+        if "multiple-choice" in question["formats"]:
+            answer_id = choice(question["answers"])["id"]
+            data["answer_id"] = answer_id
+    # FIXME what about multipart questions?
+    sleep(steptime)
+    res = ts.client.patch(f"/api/steps/{step_id}", json=data)
+    logger.debug(res)
+
+
+def work_embedded_step(ts, step_id, steptime=300):
+    step = ts.client.get(f"/api/steps/{step_id}").json()
+    if "iframe" in step["html"]:
+        html = HTML(html=step["html"])
+        for frame in html.xpath("//iframe/@src"):
+            ts.client.get(frame)
+    sleep(steptime)
+    res = ts.client.patch(
+        f"/api/steps/{step_id}", json={"is_completed": True, "response_validation": {}}
+    )
+    logger.debug(res)
+
+
+def work_placeholder_step(ts, step_id, steptime=300):
     pass
 
 
-def work_exercise_step(ts, step_id):
-    pass
+step_methods = {
+    "reading": work_reading_step,
+    "exercise": work_exercise_step,
+    "interactive": work_embedded_step,
+    "video": work_embedded_step,
+    "placeholder": work_placeholder_step,
+}
 
-
-def updates(ts):
-    ts.client.get("/api/updates")
+# Teacher routines
 
 
 def course_roster(ts):
