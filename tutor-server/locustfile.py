@@ -7,7 +7,7 @@ import os
 import json
 
 # from gevent import GreenletExit
-from locust import HttpLocust, TaskSet  # , task
+from locust import HttpLocust, TaskSet, between  # , task
 from random import choice, random
 from time import sleep
 from urllib.parse import urlencode
@@ -92,10 +92,11 @@ def reset_password(ts, res, password):
 def logout(ts):
     data = {"_method": "delete", "authenticity_token": getattr(ts, "csrf_token", "")}
     ts.client.headers.pop("X-Requested-With", None)
+    ts.client.headers.pop("X-CSRF-Token", None)
     ts.client.post("/accounts/logout", data=data)
     for item in ["bootstrap", "user_type", "course", "course_data"]:
         delattr(ts.locust, item)
-    for item in ["csrf_token", "csrf_attribute"]:
+    for item in ["csrf_token", "csrf_param"]:
         delattr(ts, item)
 
 
@@ -221,7 +222,7 @@ def revise_course(ts, steptime=60):
 
 
 def visit_completed_steps(ts, taskid, steptime=60):
-    ecosystem_id = ts.locust.couse["ecosystem_id"]
+    ecosystem_id = ts.locust.course["ecosystem_id"]
     book_uuid = ts.locust.course["ecosystem_book_uuid"]
     task = ts.client.get(f"/api/tasks/{taskid}", name="/api/tasks/{taskid}").json()
     if task["type"] == "reading":
@@ -243,7 +244,7 @@ def visit_completed_steps(ts, taskid, steptime=60):
                     name="/api/pages/{page_uuid}/notes",
                 )
 
-        sleep(steptime)
+        sleep(random() * steptime)
 
 
 def work_course_next_task(ts, steptime=300, number_steps=None):
@@ -270,11 +271,67 @@ def work_course_next_task(ts, steptime=300, number_steps=None):
     ts.locust.course_data = course_data
 
 
+def work_course_practice_worst(ts, steptime=300):
+    visit_course(ts)
+    course_id = ts.locust.course["id"]
+    res = ts.client.post(
+        f"/api/courses/{course_id}/practice/worst",
+        name="/api/courses/{course_id}/practice/worst",
+        json={}
+    )
+    logger.info(res.text)
+    # FIXME can the above fail?
+    if res:
+        task = res.json()
+        logger.debug(f"Working task {task['title']} worst")
+        work_task_steps(ts, task, steptime=steptime)
+
+
+def work_course_practice_random_chapter(ts, steptime=300):
+    visit_course(ts)
+    course_id = ts.locust.course["id"]
+    guide = ts.client.get(
+        f"/api/courses/{course_id}/guide", name="/api/courses/{course_id}/guide"
+    ).json()
+    chapter = choice(guide["children"])
+    res = ts.client.post(
+        f"/api/courses/{course_id}/practice",
+        name="/api/courses/{course_id}/practice",
+        json={"page_ids": chapter["page_ids"]}
+    )
+    # FIXME can the above fail?
+    task = res.json()
+    logger.debug(f"Working task {task['title']} {chapter['title']}")
+    work_task_steps(ts, task, steptime=steptime)
+
+
+def work_course_practice_random_page(ts, steptime=300):
+    visit_course(ts)
+    course_id = ts.locust.course["id"]
+    guide = ts.client.get(
+        f"/api/courses/{course_id}/guide", name="/api/courses/{course_id}/guide"
+    ).json()
+    pageid = choice(guide["page_ids"])
+    res = ts.client.post(
+        f"/api/courses/{course_id}/practice",
+        name="/api/courses/{course_id}/practice",
+        json={"page_ids": [pageid]},
+    )
+    # FIXME can the above fail?
+    task = res.json()
+    logger.debug(f"Working task {task['title']} page_id: {pageid}")
+    work_task_steps(ts, task, steptime=steptime)
+
+
 def work_task_steps(ts, task, steptime=300, number_steps=None):
     course = ts.locust.course
-    ts.client.get(f"/api/ecosystems/{course['ecosystem_id']}/readings").json()
     ts.client.get(
-        f"/api/books/{course['ecosystem_book_uuid']}/highlighted_sections"
+        f"/api/ecosystems/{course['ecosystem_id']}/readings",
+        name="/api/ecosystems/{course['ecosystem_id']}/readings",
+    ).json()
+    ts.client.get(
+        f"/api/books/{course['ecosystem_book_uuid']}/highlighted_sections",
+        name="/api/books/{course['ecosystem_book_uuid']}/highlighted_sections",
     ).json()
     tt = ts.client.get(
         f"/api/tasks/{task['id']}", name="/api/tasks/{task['id']}"
@@ -301,34 +358,39 @@ def work_task_steps(ts, task, steptime=300, number_steps=None):
 
 
 def work_reading_step(ts, step_id, steptime=300):
-    step = ts.client.get(f"/api/steps/{step_id}").json()
+    step = ts.client.get(f"/api/steps/{step_id}", name="/api/steps/{step_id}").json()
     for page in step["related_content"]:
-        ts.client.get(f"/api/pages/{page['uuid']}/notes")
+        ts.client.get(
+            f"/api/pages/{page['uuid']}/notes", name="/api/pages/{page['uuid']}/notes"
+        )
     # Consider variable sleeptime for differemt types/lengths of steps
     # FIXME do something about fetching videos, ans sleeping the length of them
     if "iframe" in step["html"]:
         html = HTML(html=step["html"])
         for frame in html.xpath("//iframe/@src"):
             ts.client.get(frame)
-    sleep(steptime)
+    sleep(random() * steptime)
     res = ts.client.patch(
-        f"/api/steps/{step_id}", json={"is_completed": True, "response_validation": {}}
+        f"/api/steps/{step_id}",
+        name="PATCH /api/steps/{step_id}",
+        json={"is_completed": True, "response_validation": {}},
     )
     logger.debug(res)
 
 
 def work_exercise_step(ts, step_id, steptime=300):
-    step = ts.client.get(f"/api/steps/{step_id}").json()
+    step = ts.client.get(f"/api/steps/{step_id}", name="/api/steps/{step_id}").json()
     # Consider variable sleeptime for different types/lengths of steps
     data = {"is_completed": True}
     for question in step["content"]["questions"]:
         if "free-response" in question["formats"]:
             # FIXME generate responses from … where?
-            # FIXME a certian percentage should get invalid and retry
+            # FIXME a certain percentage should get invalid and retry
             free_response = "This is not a valid response"
             response_validation = ts.client.get(
                 f"{ts.locust.bootstrap['response_validation']['url']}"
-                f"?uid={question['id']}&response={free_response}"
+                f"?uid={question['id']}&response={free_response}",
+                name="validation",
             ).json()
             data["free_response"] = free_response
             data["response_validation"] = response_validation
@@ -338,20 +400,24 @@ def work_exercise_step(ts, step_id, steptime=300):
             answer_id = choice(question["answers"])["id"]
             data["answer_id"] = answer_id
     # FIXME what about multipart questions?
-    sleep(steptime)
-    res = ts.client.patch(f"/api/steps/{step_id}", json=data)
+    sleep(random() * steptime)
+    res = ts.client.patch(
+        f"/api/steps/{step_id}", name="PATCH /api/steps/{step_id}", json=data
+    )
     logger.debug(res)
 
 
 def work_embedded_step(ts, step_id, steptime=300):
-    step = ts.client.get(f"/api/steps/{step_id}").json()
+    step = ts.client.get(f"/api/steps/{step_id}", name="/api/steps/{step_id}").json()
     if "iframe" in step["html"]:
         html = HTML(html=step["html"])
         for frame in html.xpath("//iframe/@src"):
             ts.client.get(frame)
-    sleep(steptime)
+    sleep(random() * steptime)
     res = ts.client.patch(
-        f"/api/steps/{step_id}", json={"is_completed": True, "response_validation": {}}
+        f"/api/steps/{step_id}",
+        name="PATCH /api/steps/{step_id}",
+        json={"is_completed": True, "response_validation": {}},
     )
     logger.debug(res)
 
@@ -437,8 +503,32 @@ def flatten_to_pages(container):
     return pages
 
 
-class StudentBehavior(TaskSet):
+class RevisingStudentBehavior(TaskSet):
     tasks = {index: 1, visit_course: 1, revise_course: 7, updates: 1}
+
+    def on_start(self):
+        become_random_student(self)
+
+    def on_stop(self):
+        sleep(random() * 5)
+        logout(self)
+
+
+class PracticingStudentBehavior(TaskSet):
+    tasks = {index: 1, visit_course: 1,
+             work_course_practice_random_chapter: 3,
+             work_course_practice_random_page: 4, updates: 1}
+
+    def on_start(self):
+        become_random_student(self)
+
+    def on_stop(self):
+        sleep(random() * 5)
+        logout(self)
+
+
+class PracticeWorstStudentBehavior(TaskSet):
+    tasks = {work_course_practice_worst: 1}
 
     def on_start(self):
         become_random_student(self)
@@ -467,15 +557,25 @@ class TeacherBehavior(TaskSet):
         logout(self)
 
 
-class StudentUser(HttpLocust):
-    task_set = StudentBehavior
+class RevisingStudentUser(HttpLocust):
+    task_set = RevisingStudentBehavior
     weight = 9
-    min_wait = 1000
-    max_wait = 5000
+    wait_time = between(1, 5)
+
+
+class PracticingStudentUser(HttpLocust):
+    task_set = PracticingStudentBehavior
+    weight = 9
+    wait_time = between(1, 5)
+
+
+class PracticeWorstStudentUser(HttpLocust):
+    task_set = PracticeWorstStudentBehavior
+    weight = 9
+    wait_time = between(1, 5)
 
 
 class TeacherUser(HttpLocust):
     task_set = TeacherBehavior
     weight = 1
-    min_wait = 1000
-    max_wait = 5000
+    wait_time = between(1, 5)
