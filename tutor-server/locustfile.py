@@ -277,7 +277,7 @@ def work_course_practice_worst(ts, steptime=300):
     res = ts.client.post(
         f"/api/courses/{course_id}/practice/worst",
         name="/api/courses/{course_id}/practice/worst",
-        json={}
+        json={},
     )
     logger.info(res.text)
     # FIXME can the above fail?
@@ -297,7 +297,7 @@ def work_course_practice_random_chapter(ts, steptime=300):
     res = ts.client.post(
         f"/api/courses/{course_id}/practice",
         name="/api/courses/{course_id}/practice",
-        json={"page_ids": chapter["page_ids"]}
+        json={"page_ids": chapter["page_ids"]},
     )
     # FIXME can the above fail?
     task = res.json()
@@ -312,13 +312,26 @@ def work_course_practice_random_page(ts, steptime=300):
         f"/api/courses/{course_id}/guide", name="/api/courses/{course_id}/guide"
     ).json()
     pageid = choice(guide["page_ids"])
-    res = ts.client.post(
+    task = ts.client.post(
         f"/api/courses/{course_id}/practice",
         name="/api/courses/{course_id}/practice",
         json={"page_ids": [pageid]},
-    )
-    # FIXME can the above fail?
-    task = res.json()
+    ).json()
+
+    placeholders = task["steps"][0]["type"] == "placeholder"
+    if placeholders:
+        tries = 30
+        while tries and placeholders:
+            tries -= 1
+            sleep(1)
+            task = ts.client.get(
+                f"/api/tasks/{task['id']}",
+                name="/api/tasks/{task['id']} Practice retry",
+            ).json()
+            placeholders = task["steps"][0]["type"] == "placeholder"
+
+        logger.debug(f"Practice: used {tries} to load")
+
     logger.debug(f"Working task {task['title']} page_id: {pageid}")
     work_task_steps(ts, task, steptime=steptime)
 
@@ -515,9 +528,13 @@ class RevisingStudentBehavior(TaskSet):
 
 
 class PracticingStudentBehavior(TaskSet):
-    tasks = {index: 1, visit_course: 1,
-             work_course_practice_random_chapter: 3,
-             work_course_practice_random_page: 4, updates: 1}
+    tasks = {
+        index: 1,
+        visit_course: 1,
+        work_course_practice_random_chapter: 3,
+        work_course_practice_random_page: 4,
+        updates: 1,
+    }
 
     def on_start(self):
         become_random_student(self)
