@@ -1,4 +1,5 @@
-from locust import HttpLocust, TaskSet, task
+from locust import TaskSet, task, constant
+from locust.contrib.fasthttp import FastHttpLocust
 import os
 import logging
 import random
@@ -24,5 +25,6 @@ class UserBehavior(TaskSet):
             self.client.get(url)
 
 
-class WebsiteUser(HttpLocust):
+class WebsiteUser(FastHttpLocust):
     task_set = UserBehavior
+    wait_time = constant(0)
