@@ -336,10 +336,11 @@ def work_course_practice_random_page(ts, steptime=300):
 
     placeholders = task["steps"][0]["type"] == "placeholder"
     if placeholders:
-        tries = 30
+        tries = 6
         while tries and placeholders:
+            wait_time = 2**(6-tries) + 0.5*random()
             tries -= 1
-            sleep(1)
+            sleep(wait_time)
             task = ts.client.get(
                 f"/api/tasks/{task['id']}",
                 name="/api/tasks/{task['id']} Practice retry",
@@ -538,10 +539,6 @@ class RevisingStudentBehavior(TaskSet):
     def on_start(self):
         become_random_student(self)
 
-    def on_stop(self):
-        sleep(random() * 5)
-        logout(self)
-
 
 class PracticingStudentBehavior(TaskSet):
     tasks = {
@@ -555,20 +552,12 @@ class PracticingStudentBehavior(TaskSet):
     def on_start(self):
         become_random_student(self)
 
-    def on_stop(self):
-        sleep(random() * 5)
-        logout(self)
-
 
 class PracticeWorstStudentBehavior(TaskSet):
     tasks = {work_course_practice_worst: 1}
 
     def on_start(self):
         become_random_student(self)
-
-    def on_stop(self):
-        sleep(random() * 5)
-        logout(self)
 
 
 class TeacherBehavior(TaskSet):
@@ -584,10 +573,6 @@ class TeacherBehavior(TaskSet):
 
     def on_start(self):
         become_random_teacher(self)
-
-    def on_stop(self):
-        sleep(random() * 5)
-        logout(self)
 
 
 class RevisingStudentUser(HttpLocust):
