@@ -94,10 +94,17 @@ def logout(ts):
     ts.client.headers.pop("X-Requested-With", None)
     ts.client.headers.pop("X-CSRF-Token", None)
     ts.client.post("/accounts/logout", data=data)
-    for item in ["bootstrap", "user_type", "course", "course_data"]:
-        delattr(ts.locust, item)
-    for item in ["csrf_token", "csrf_param"]:
-        delattr(ts, item)
+    try:
+        for item in ["bootstrap", "user_type", "course", "course_data"]:
+            delattr(ts.locust, item)
+    except AttributeError:
+        pass
+
+    try:
+        for item in ["csrf_token", "csrf_param"]:
+            delattr(ts, item)
+    except AttributeError:
+        pass
 
 
 def become_random_user(ts, usertype=None):
@@ -120,10 +127,13 @@ def become_user(ts, username, password):
     )
     if len(j) > 0:
         bootstrap = json.loads(j[0])
-    if bootstrap["user"]["terms_signatures_needed"]:
-        agree_to_tutor_terms(ts)
-    ts.locust.bootstrap = bootstrap
-    ts.locust.username = username
+        if bootstrap["user"]["terms_signatures_needed"]:
+            agree_to_tutor_terms(ts)
+        ts.locust.bootstrap = bootstrap
+        ts.locust.username = username
+    else:
+        logger.warning(f"Failed to login as user {username}")
+
     return
 
 
@@ -160,6 +170,12 @@ def submit_form(ts, res, data={}, form_index=1):
     else:
         form_url = res.url
 
+    form_method = res_html.xpath(f"((//form)[{form_index}])/@method")
+    if form_method and form_method != [""]:
+        form_method = form_method[0]
+    else:
+        form_method = 'post'
+
     form_data = {}
     for i in res_html.xpath(f"(//form)[{form_index}]//input"):
         name = i.attrs.get("name")
@@ -172,7 +188,7 @@ def submit_form(ts, res, data={}, form_index=1):
         else:
             form_data[name] = val
     form_data.update(data)
-    res = ts.client.post(form_url, data=form_data)
+    res = ts.client.request(form_method, form_url, data=form_data)
     return res
 
 
