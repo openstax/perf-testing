@@ -14,6 +14,9 @@ from urllib.parse import urlencode
 
 from requests_html import HTML
 
+LOGLEVEL = os.environ.get("LOGLEVEL", "WARNING").upper()
+logging.basicConfig(level=LOGLEVEL)
+
 logger = logging.getLogger(__name__)
 
 here = os.path.dirname(os.path.abspath(__file__))
@@ -174,7 +177,7 @@ def submit_form(ts, res, data={}, form_index=1):
     if form_method and form_method != [""]:
         form_method = form_method[0]
     else:
-        form_method = 'post'
+        form_method = "post"
 
     form_data = {}
     for i in res_html.xpath(f"(//form)[{form_index}]//input"):
@@ -215,14 +218,10 @@ def visit_course(ts):
         f"/api/courses/{course_id}/dashboard", name="/api/courses/{course_id}/dashboard"
     ).json()
     ts.locust.course_data = course_data
-    if ts.locust.user_type == "teacher":
-        guide_name = "teacher_guide"
-    else:
-        guide_name = "guide"
-    ts.client.get(
-        f"/api/courses/{course_id}/{guide_name}",
-        name=f"/api/courses/{{course_id}}/{guide_name}",
-    )
+    if ts.locust.user_type == "student":
+        ts.client.get(
+            f"/api/courses/{course_id}/guide", name="/api/courses/{course_id}/guide"
+        )
 
 
 def revise_course(ts, steptime=60):
@@ -338,7 +337,7 @@ def work_course_practice_random_page(ts, steptime=300):
     if placeholders:
         tries = 6
         while tries and placeholders:
-            wait_time = 2**(6-tries) + 0.5*random()
+            wait_time = 2 ** (6 - tries) + 0.5 * random()
             tries -= 1
             sleep(wait_time)
             task = ts.client.get(
@@ -467,22 +466,33 @@ step_methods = {
 # Teacher routines
 
 
+def course_offerings(ts):
+    res = ts.client.get("/api/offerings")
+    if res:
+        return res.json()["items"]
+
+
 def course_roster(ts):
     if not (hasattr(ts.locust, "course")):
         visit_course(ts)
     ts.client.get(f"/api/courses/{ts.locust.course['id']}/roster", name="roster")
 
 
+def course_calendar(ts):
+    if not (hasattr(ts.locust, "course")):
+        visit_course(ts)
+    ts.client.get(f"/api/courses/{ts.locust.course['id']}/dashboard", name="dashboard")
+
+
 def course_performance(ts):
     if not (hasattr(ts.locust, "course")):
         visit_course(ts)
+    course_id = ts.locust.course["id"]
     ts.client.get(
-        f"/api/courses/{ts.locust.course['id']}/performance", name="student scores"
+        f"/api/courses/{course_id}/teacher_guide",
+        name="/api/courses/{course_id}/teacher_guide",
     )
-
-
-def course_offerings(ts):
-    ts.client.get("/api/offerings")
+    ts.client.get(f"/api/courses/{course_id}/performance", name="student scores")
 
 
 def course_spreadsheet(ts):
@@ -523,6 +533,38 @@ def course_question_library(ts):
     )
 
 
+def claim_preview(ts):
+    offerings = course_offerings(ts)
+    if offerings:
+        offering = choice(offerings)
+        logger.debug(json.dumps(offering, indent=2))
+        preview = ts.client.post(
+            "/api/courses",
+            json={
+                "name": offering["title"],
+                "offering_id": offering["id"],
+                "num_sections": 1,
+                "is_preview": True,
+                "time_zone": "Central Time (US & Canada)",
+                "copy_question_library": True,
+                "term": offering["active_term_years"][0]["term"],
+                "year": offering["active_term_years"][0]["year"],
+            },
+        )
+        if preview:
+            ts.locust.course = preview.json()
+            course_id = ts.locust.course["id"]
+            course_data = ts.client.get(
+                f"/api/courses/{course_id}/dashboard",
+                name="/api/courses/{course_id}/dashboard",
+            ).json()
+            ts.locust.course_data = course_data
+        else:
+            logger.warning(
+                "Failed to claim preview: {}".format(json.dumps(offering, indent=2))
+            )
+
+
 def flatten_to_pages(container):
     pages = []
     for child in container["children"]:
@@ -560,15 +602,29 @@ class PracticeWorstStudentBehavior(TaskSet):
         become_random_student(self)
 
 
-class TeacherBehavior(TaskSet):
+class TeacherPreviewCourseBehavior(TaskSet):
     tasks = {
-        index: 1,
-        visit_course: 1,
+        course_calendar: 1,
         course_roster: 2,
         course_performance: 5,
         course_spreadsheet: 1,
         course_question_library: 1,
-        course_offerings: 1,
+    }
+
+    def on_start(self):
+        become_random_teacher(self)
+        claim_preview(self)
+
+
+class TeacherBehavior(TaskSet):
+    tasks = {
+        index: 1,
+        visit_course: 1,
+        course_calendar: 1,
+        course_roster: 2,
+        course_performance: 5,
+        course_spreadsheet: 1,
+        course_question_library: 1,
     }
 
     def on_start(self):
@@ -595,5 +651,11 @@ class PracticeWorstStudentUser(HttpLocust):
 
 class TeacherUser(HttpLocust):
     task_set = TeacherBehavior
+    weight = 1
+    wait_time = between(1, 5)
+
+
+class PreviewTeacherUser(HttpLocust):
+    task_set = TeacherPreviewCourseBehavior
     weight = 1
     wait_time = between(1, 5)
