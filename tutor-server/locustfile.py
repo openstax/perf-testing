@@ -302,7 +302,7 @@ def work_course_practice_worst(ts, steptime=300):
         work_task_steps(ts, task, steptime=steptime)
 
 
-def work_course_practice_random_chapter(ts, steptime=300):
+def work_course_practice_random_chapter(ts, steptime=10):
     visit_course(ts)
     course_id = ts.locust.course["id"]
     guide = ts.client.get(
@@ -320,7 +320,7 @@ def work_course_practice_random_chapter(ts, steptime=300):
     work_task_steps(ts, task, steptime=steptime)
 
 
-def work_course_practice_random_page(ts, steptime=300):
+def work_course_practice_random_page(ts, steptime=10):
     visit_course(ts)
     course_id = ts.locust.course["id"]
     guide = ts.client.get(
@@ -586,8 +586,8 @@ class PracticingStudentBehavior(TaskSet):
     tasks = {
         index: 1,
         visit_course: 1,
-        work_course_practice_random_chapter: 3,
-        work_course_practice_random_page: 4,
+        work_course_practice_random_chapter: 5,
+        work_course_practice_random_page: 8,
         updates: 1,
     }
 
@@ -604,11 +604,12 @@ class PracticeWorstStudentBehavior(TaskSet):
 
 class TeacherPreviewCourseBehavior(TaskSet):
     tasks = {
-        course_calendar: 1,
-        course_roster: 2,
-        course_performance: 5,
-        course_spreadsheet: 1,
-        course_question_library: 1,
+        course_calendar: 2,
+        course_roster: 4,
+        course_performance: 10,
+        course_spreadsheet: 2,
+        course_question_library: 2,
+        claim_preview: 1,
     }
 
     def on_start(self):
