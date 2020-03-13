@@ -309,15 +309,10 @@ def work_course_practice_random_chapter(ts, steptime=10):
         f"/api/courses/{course_id}/guide", name="/api/courses/{course_id}/guide"
     ).json()
     chapter = choice(guide["children"])
-    res = ts.client.post(
-        f"/api/courses/{course_id}/practice",
-        name="/api/courses/{course_id}/practice",
-        json={"page_ids": chapter["page_ids"]},
-    )
-    # FIXME can the above fail?
-    task = res.json()
-    logger.debug(f"Working task {task['title']} {chapter['title']}")
-    work_task_steps(ts, task, steptime=steptime)
+    task = generate_practice_task(ts, course_id, chapter["page_ids"])
+    if task:
+        logger.debug(f"Working task {task['title']} {chapter['title']}")
+        work_task_steps(ts, task, steptime=steptime)
 
 
 def work_course_practice_random_page(ts, steptime=10):
@@ -327,10 +322,17 @@ def work_course_practice_random_page(ts, steptime=10):
         f"/api/courses/{course_id}/guide", name="/api/courses/{course_id}/guide"
     ).json()
     pageid = choice(guide["page_ids"])
+    task = generate_practice_task(ts, course_id, pageid)
+    if task:
+        logger.debug(f"Working task {task['title']} page_id: {pageid}")
+        work_task_steps(ts, task, steptime=steptime)
+
+
+def generate_practice_task(ts, course_id, page_ids=[]):
     task = ts.client.post(
         f"/api/courses/{course_id}/practice",
         name="/api/courses/{course_id}/practice",
-        json={"page_ids": [pageid]},
+        json={"page_ids": [page_ids]},
     ).json()
 
     placeholders = task["steps"][0]["type"] == "placeholder"
@@ -348,8 +350,7 @@ def work_course_practice_random_page(ts, steptime=10):
 
         logger.debug(f"Practice: used {tries} to load")
 
-    logger.debug(f"Working task {task['title']} page_id: {pageid}")
-    work_task_steps(ts, task, steptime=steptime)
+    return task
 
 
 def work_task_steps(ts, task, steptime=300, number_steps=None):
