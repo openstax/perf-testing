@@ -9,14 +9,12 @@ import json
 # from gevent import GreenletExit
 from locust import HttpLocust, TaskSet, between  # , task
 from random import choice, random
-from time import sleep
+from time import sleep, time
 from urllib.parse import urlencode
 
 from requests_html import HTML
 
-LOGLEVEL = os.environ.get("LOGLEVEL", "WARNING").upper()
-logging.basicConfig(level=LOGLEVEL)
-
+MAXTRIES = 6
 logger = logging.getLogger(__name__)
 
 here = os.path.dirname(os.path.abspath(__file__))
@@ -294,7 +292,7 @@ def work_course_practice_worst(ts, steptime=300):
         name="/api/courses/{course_id}/practice/worst",
         json={},
     )
-    logger.info(res.text)
+    logger.debug(res.text)
     # FIXME can the above fail?
     if res:
         task = res.json()
@@ -329,6 +327,7 @@ def work_course_practice_random_page(ts, steptime=10):
 
 
 def generate_practice_task(ts, course_id, page_ids=[]):
+    start_time = time()
     task = ts.client.post(
         f"/api/courses/{course_id}/practice",
         name="/api/courses/{course_id}/practice",
@@ -337,9 +336,9 @@ def generate_practice_task(ts, course_id, page_ids=[]):
 
     placeholders = task["steps"][0]["type"] == "placeholder"
     if placeholders:
-        tries = 6
+        tries = MAXTRIES
         while tries and placeholders:
-            wait_time = 2 ** (6 - tries) + 0.5 * random()
+            wait_time = 2 ** (MAXTRIES - tries) + 0.5 * random()
             tries -= 1
             sleep(wait_time)
             task = ts.client.get(
@@ -348,7 +347,17 @@ def generate_practice_task(ts, course_id, page_ids=[]):
             ).json()
             placeholders = task["steps"][0]["type"] == "placeholder"
 
-        logger.debug(f"Practice: used {tries} to load")
+        if placeholders:
+            logger.info(
+                f"Practice: failed after {MAXTRIES - tries} tries"
+                f" {time() - start_time} sec tries"
+            )
+            task = None
+        else:
+            logger.info(
+                f"Practice: succeeded after {MAXTRIES - tries} tries"
+                f" {time() - start_time} sec to load"
+            )
 
     return task
 
@@ -417,13 +426,17 @@ def work_exercise_step(ts, step_id, steptime=300):
             # FIXME generate responses from … where?
             # FIXME a certain percentage should get invalid and retry
             free_response = "This is not a valid response"
-            response_validation = ts.client.get(
+            res = ts.client.get(
                 f"{ts.locust.bootstrap['response_validation']['url']}"
                 f"?uid={question['id']}&response={free_response}",
                 name="validation",
-            ).json()
-            data["free_response"] = free_response
-            data["response_validation"] = response_validation
+            )
+            if res:
+                response_validation = res.json()
+                data["free_response"] = free_response
+                data["response_validation"] = response_validation
+            else:
+                data["response_validation"] = {}
         else:
             data["response_validation"] = {}
         if "multiple-choice" in question["formats"]:
@@ -510,7 +523,7 @@ def course_spreadsheet(ts):
     if job["status"] == "succeeded":
         ts.client.get(job["url"], name="student scores spreadsheet")
     else:
-        logger.info(job)
+        logger.debug(job)
 
 
 def course_question_library(ts):
