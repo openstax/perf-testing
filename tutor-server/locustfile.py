@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 
 from requests_html import HTML
 
-MAXTRIES = 6
+MAXTRIES = 10
 logger = logging.getLogger(__name__)
 
 here = os.path.dirname(os.path.abspath(__file__))
@@ -274,7 +274,10 @@ def work_course_next_task(ts, steptime=300, number_steps=None):
         tasks_not_completed.sort(key=lambda t: t["opens_at"])
         ts.locust.tasks_to_work = tasks_not_completed
 
-    task = ts.locust.tasks_to_work.pop()
+    tt = ts.locust.tasks_to_work.pop()
+    task = ts.client.get(
+        f"/api/tasks/{tt['id']}", name="/api/tasks/{tt['id']}"
+    ).json()
     logger.debug(f"Working task {task['title']}")
     work_task_steps(ts, task, steptime=steptime, number_steps=number_steps)
     # refresh course data local copy
@@ -307,6 +310,7 @@ def work_course_practice_random_chapter(ts, steptime=10):
         f"/api/courses/{course_id}/guide", name="/api/courses/{course_id}/guide"
     ).json()
     chapter = choice(guide["children"])
+    logger.info(f"Generating practice task for {chapter['title']}")
     task = generate_practice_task(ts, course_id, chapter["page_ids"])
     if task:
         logger.debug(f"Working task {task['title']} {chapter['title']}")
@@ -320,6 +324,7 @@ def work_course_practice_random_page(ts, steptime=10):
         f"/api/courses/{course_id}/guide", name="/api/courses/{course_id}/guide"
     ).json()
     pageid = choice(guide["page_ids"])
+    logger.info(f"Generating practice task for page_id: {pageid}")
     task = generate_practice_task(ts, course_id, pageid)
     if task:
         logger.debug(f"Working task {task['title']} page_id: {pageid}")
@@ -350,14 +355,20 @@ def generate_practice_task(ts, course_id, page_ids=[]):
         if placeholders:
             logger.info(
                 f"Practice: failed after {MAXTRIES - tries} tries"
-                f" {time() - start_time} sec tries"
+                f" {time() - start_time} sec task_id: {task['id']}"
             )
             task = None
         else:
             logger.info(
                 f"Practice: succeeded after {MAXTRIES - tries} tries"
-                f" {time() - start_time} sec to load"
+                f" {time() - start_time} sec to load task_id: {task['id']}"
             )
+
+    else:
+        logger.info(
+            f"Practice: succeeded after 0 retries"
+            f" {time() - start_time} sec to load task_id: {task['id']}"
+        )
 
     return task
 
@@ -372,12 +383,9 @@ def work_task_steps(ts, task, steptime=300, number_steps=None):
         f"/api/books/{course['ecosystem_book_uuid']}/highlighted_sections",
         name="/api/books/{course['ecosystem_book_uuid']}/highlighted_sections",
     ).json()
-    tt = ts.client.get(
-        f"/api/tasks/{task['id']}", name="/api/tasks/{task['id']}"
-    ).json()
 
     placeholders = False
-    for step in tt["steps"][:number_steps]:
+    for step in task["steps"][:number_steps]:
         if step["is_completed"] is False:
             if step["type"] == "placeholder":
                 placeholders = True
