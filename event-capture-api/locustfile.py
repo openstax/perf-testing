@@ -1,4 +1,4 @@
-from locust import HttpLocust, TaskSet, task, between
+from locust import HttpUser, TaskSet, task, between
 import uuid
 import logging
 import random
@@ -51,11 +51,8 @@ class ApiBehavior(TaskSet):
 #     if success:
 #       logger.info("Post success!".format(res.text) )
 
-class EventsApiTest(HttpLocust):
-  task_set = ApiBehavior
+class EventsApiTest(HttpUser):
+  tasks = [ApiBehavior]
   wait_time = between(1.0, 2.0)
   host = "http://localhost:4004"
   sock = None
-
-  def __init__(self):
-    super(EventsApiTest, self).__init__()
