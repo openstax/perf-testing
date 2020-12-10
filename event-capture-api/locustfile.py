@@ -4,6 +4,9 @@ import logging
 import random
 from random import choice
 from string import ascii_uppercase
+import urllib3
+
+urllib3.disable_warnings()
 
 logger = logging.getLogger(__name__)
 
