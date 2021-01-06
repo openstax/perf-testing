@@ -1,5 +1,8 @@
+bin
 lib
 lib64
-bin
 share
 
+*.log
+/.venv
+/venv
