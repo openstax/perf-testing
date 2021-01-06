@@ -7,14 +7,13 @@ import os
 import json
 
 # from gevent import GreenletExit
-from locust import HttpLocust, TaskSet, between  # , task
+from locust import HttpLocust, TaskSet  # , task
 from random import choice, random
-from time import sleep, time
+from time import sleep
 from urllib.parse import urlencode
 
 from requests_html import HTML
 
-MAXTRIES = 10
 logger = logging.getLogger(__name__)
 
 here = os.path.dirname(os.path.abspath(__file__))
@@ -90,28 +89,46 @@ def reset_password(ts, res, password):
         return res
 
 
+def submit_form(ts, res, data={}, form_index=1):
+    update_security_tokens(ts, res)
+    res_html = HTML(url=res.url, html=res.text)
+    form_action = res_html.xpath(f"((//form)[{form_index}])/@action")
+    # _make_absolute strips last path component if action == ''
+    if form_action and form_action != [""]:
+        form_url = res_html._make_absolute(form_action[0])
+    else:
+        form_url = res.url
+
+    form_data = {}
+    for i in res_html.xpath(f"(//form)[{form_index}]//input"):
+        name = i.attrs.get("name")
+        val = i.attrs.get("value")
+        if name in form_data:
+            if isinstance(form_data[name], list):
+                form_data[name].append(val)
+            else:
+                form_data[name] = [form_data[name], val]
+        else:
+            form_data[name] = val
+    form_data.update(data)
+    res = ts.client.post(form_url, data=form_data)
+    return res
+
+
 def logout(ts):
     data = {"_method": "delete", "authenticity_token": getattr(ts, "csrf_token", "")}
     ts.client.headers.pop("X-Requested-With", None)
-    ts.client.headers.pop("X-CSRF-Token", None)
     ts.client.post("/accounts/logout", data=data)
-    try:
-        for item in ["bootstrap", "user_type", "course", "course_data"]:
-            delattr(ts.locust, item)
-    except AttributeError:
-        pass
-
-    try:
-        for item in ["csrf_token", "csrf_param"]:
-            delattr(ts, item)
-    except AttributeError:
-        pass
+    for item in ["bootstrap", "user_type", "course", "course_data"]:
+        delattr(ts.locust, item)
+    for item in ["csrf_token", "csrf_attribute"]:
+        delattr(ts, item)
 
 
 def become_random_user(ts, usertype=None):
     if usertype is None:
         usertype, username, password = choice(
-            [(utype,) + utup for utype, ulist in users.items() for utup in ulist]
+            [(utype,) + u for utype, utup in users.items() for u in utup]
         )
     else:
         username, password = choice(users[usertype])
@@ -128,13 +145,10 @@ def become_user(ts, username, password):
     )
     if len(j) > 0:
         bootstrap = json.loads(j[0])
-        if bootstrap["user"]["terms_signatures_needed"]:
-            agree_to_tutor_terms(ts)
-        ts.locust.bootstrap = bootstrap
-        ts.locust.username = username
-    else:
-        logger.warning(f"Failed to login as user {username}")
-
+    if bootstrap["user"]["terms_signatures_needed"]:
+        agree_to_tutor_terms(ts)
+    ts.locust.bootstrap = bootstrap
+    ts.locust.username = username
     return
 
 
@@ -152,60 +166,18 @@ def become_random_teacher(ts):
     return become_random_user(ts, "teacher")
 
 
-def new_user(ts):
-    if random() < 0.1:
-        ts.on_stop()
-        ts.on_start()
-
-
-# Common routines
-
-
-def submit_form(ts, res, data={}, form_index=1):
-    update_security_tokens(ts, res)
-    res_html = HTML(url=res.url, html=res.text)
-    form_action = res_html.xpath(f"((//form)[{form_index}])/@action")
-    # _make_absolute strips last path component if action == ""
-    if form_action and form_action != [""]:
-        form_url = res_html._make_absolute(form_action[0])
-    else:
-        form_url = res.url
-
-    form_method = res_html.xpath(f"((//form)[{form_index}])/@method")
-    if form_method and form_method != [""]:
-        form_method = form_method[0]
-    else:
-        form_method = "post"
-
-    form_data = {}
-    for i in res_html.xpath(f"(//form)[{form_index}]//input"):
-        name = i.attrs.get("name")
-        val = i.attrs.get("value")
-        if name in form_data:
-            if isinstance(form_data[name], list):
-                form_data[name].append(val)
-            else:
-                form_data[name] = [form_data[name], val]
-        else:
-            form_data[name] = val
-    form_data.update(data)
-    res = ts.client.request(form_method, form_url, data=form_data)
-    return res
+def list_course_ids(ts):
+    return [c["id"] for c in ts.locust.bootstrap["courses"]]
 
 
 def index(ts):
     ts.client.get("/")
 
 
-def updates(ts):
-    ts.client.get("/api/updates")
-
-
-def list_course_ids(ts):
-    return [c["id"] for c in ts.locust.bootstrap["courses"]]
-
-
-# Student Routines
+def new_user(ts):
+    if random() < 0.1:
+        ts.on_stop()
+        ts.on_start()
 
 
 def visit_course(ts):
@@ -216,10 +188,14 @@ def visit_course(ts):
         f"/api/courses/{course_id}/dashboard", name="/api/courses/{course_id}/dashboard"
     ).json()
     ts.locust.course_data = course_data
-    if ts.locust.user_type == "student":
-        ts.client.get(
-            f"/api/courses/{course_id}/guide", name="/api/courses/{course_id}/guide"
-        )
+    if ts.locust.user_type == "teacher":
+        guide_name = "teacher_guide"
+    else:
+        guide_name = "guide"
+    ts.client.get(
+        f"/api/courses/{course_id}/{guide_name}",
+        name=f"/api/courses/{{course_id}}/{guide_name}",
+    )
 
 
 def revise_course(ts, steptime=60):
@@ -235,7 +211,7 @@ def revise_course(ts, steptime=60):
 
 
 def visit_completed_steps(ts, taskid, steptime=60):
-    ecosystem_id = ts.locust.course["ecosystem_id"]
+    ecosystem_id = ts.locust.couse["ecosystem_id"]
     book_uuid = ts.locust.course["ecosystem_book_uuid"]
     task = ts.client.get(f"/api/tasks/{taskid}", name="/api/tasks/{taskid}").json()
     if task["type"] == "reading":
@@ -257,7 +233,7 @@ def visit_completed_steps(ts, taskid, steptime=60):
                     name="/api/pages/{page_uuid}/notes",
                 )
 
-        sleep(random() * steptime)
+        sleep(steptime)
 
 
 def work_course_next_task(ts, steptime=300, number_steps=None):
@@ -274,11 +250,8 @@ def work_course_next_task(ts, steptime=300, number_steps=None):
         tasks_not_completed.sort(key=lambda t: t["opens_at"])
         ts.locust.tasks_to_work = tasks_not_completed
 
-    tt = ts.locust.tasks_to_work.pop()
-    task = ts.client.get(
-        f"/api/tasks/{tt['id']}", name="/api/tasks/{tt['id']}"
-    ).json()
-    logger.debug(f"Working task {task['title']}")
+    task = ts.locust.tasks_to_work.pop()
+    # print(f"Working task {task['title']}")
     work_task_steps(ts, task, steptime=steptime, number_steps=number_steps)
     # refresh course data local copy
     course_data = ts.client.get(
@@ -287,110 +260,23 @@ def work_course_next_task(ts, steptime=300, number_steps=None):
     ts.locust.course_data = course_data
 
 
-def work_course_practice_worst(ts, steptime=300):
-    visit_course(ts)
-    course_id = ts.locust.course["id"]
-    res = ts.client.post(
-        f"/api/courses/{course_id}/practice/worst",
-        name="/api/courses/{course_id}/practice/worst",
-        json={},
-    )
-    logger.debug(res.text)
-    # FIXME can the above fail?
-    if res:
-        task = res.json()
-        logger.debug(f"Working task {task['title']} worst")
-        work_task_steps(ts, task, steptime=steptime)
-
-
-def work_course_practice_random_chapter(ts, steptime=10):
-    visit_course(ts)
-    course_id = ts.locust.course["id"]
-    guide = ts.client.get(
-        f"/api/courses/{course_id}/guide", name="/api/courses/{course_id}/guide"
-    ).json()
-    chapter = choice(guide["children"])
-    logger.info(f"Generating practice task for {chapter['title']}")
-    task = generate_practice_task(ts, course_id, chapter["page_ids"])
-    if task:
-        logger.debug(f"Working task {task['title']} {chapter['title']}")
-        work_task_steps(ts, task, steptime=steptime)
-
-
-def work_course_practice_random_page(ts, steptime=10):
-    visit_course(ts)
-    course_id = ts.locust.course["id"]
-    guide = ts.client.get(
-        f"/api/courses/{course_id}/guide", name="/api/courses/{course_id}/guide"
-    ).json()
-    pageid = choice(guide["page_ids"])
-    logger.info(f"Generating practice task for page_id: {pageid}")
-    task = generate_practice_task(ts, course_id, pageid)
-    if task:
-        logger.debug(f"Working task {task['title']} page_id: {pageid}")
-        work_task_steps(ts, task, steptime=steptime)
-
-
-def generate_practice_task(ts, course_id, page_ids=[]):
-    start_time = time()
-    task = ts.client.post(
-        f"/api/courses/{course_id}/practice",
-        name="/api/courses/{course_id}/practice",
-        json={"page_ids": [page_ids]},
-    ).json()
-
-    placeholders = task["steps"][0]["type"] == "placeholder"
-    if placeholders:
-        tries = MAXTRIES
-        while tries and placeholders:
-            wait_time = 2 ** (MAXTRIES - tries) + 0.5 * random()
-            tries -= 1
-            sleep(wait_time)
-            task = ts.client.get(
-                f"/api/tasks/{task['id']}",
-                name="/api/tasks/{task['id']} Practice retry",
-            ).json()
-            placeholders = task["steps"][0]["type"] == "placeholder"
-
-        if placeholders:
-            logger.info(
-                f"Practice: failed after {MAXTRIES - tries} tries"
-                f" {time() - start_time} sec task_id: {task['id']}"
-            )
-            task = None
-        else:
-            logger.info(
-                f"Practice: succeeded after {MAXTRIES - tries} tries"
-                f" {time() - start_time} sec to load task_id: {task['id']}"
-            )
-
-    else:
-        logger.info(
-            f"Practice: succeeded after 0 retries"
-            f" {time() - start_time} sec to load task_id: {task['id']}"
-        )
-
-    return task
-
-
 def work_task_steps(ts, task, steptime=300, number_steps=None):
     course = ts.locust.course
+    ts.client.get(f"/api/ecosystems/{course['ecosystem_id']}/readings").json()
     ts.client.get(
-        f"/api/ecosystems/{course['ecosystem_id']}/readings",
-        name="/api/ecosystems/{course['ecosystem_id']}/readings",
+        f"/api/books/{course['ecosystem_book_uuid']}/highlighted_sections"
     ).json()
-    ts.client.get(
-        f"/api/books/{course['ecosystem_book_uuid']}/highlighted_sections",
-        name="/api/books/{course['ecosystem_book_uuid']}/highlighted_sections",
+    tt = ts.client.get(
+        f"/api/tasks/{task['id']}", name="/api/tasks/{task['id']}"
     ).json()
 
     placeholders = False
-    for step in task["steps"][:number_steps]:
+    for step in tt["steps"][:number_steps]:
         if step["is_completed"] is False:
             if step["type"] == "placeholder":
                 placeholders = True
                 continue
-            logger.debug(f"Working {step['type']} step: {step['id']}")
+            # print(f"Working {step['type']} step: {step['id']}")
             step_methods[step["type"]](ts, step["id"], steptime)
 
     # Update task steps - get personalized and spaced practice
@@ -400,77 +286,61 @@ def work_task_steps(ts, task, steptime=300, number_steps=None):
         ).json()
         for step in tt["steps"][:number_steps]:
             if step["is_completed"] is False:
-                logger.debug(f"Working {step['type']} step: {step['id']}")
+                # print(f"Working {step['type']} step: {step['id']}")
                 step_methods[step["type"]](ts, step["id"], steptime)
 
 
 def work_reading_step(ts, step_id, steptime=300):
-    step = ts.client.get(f"/api/steps/{step_id}", name="/api/steps/{step_id}").json()
+    step = ts.client.get(f"/api/steps/{step_id}").json()
     for page in step["related_content"]:
-        ts.client.get(
-            f"/api/pages/{page['uuid']}/notes", name="/api/pages/{page['uuid']}/notes"
-        )
+        ts.client.get(f"/api/pages/{page['uuid']}/notes")
     # Consider variable sleeptime for differemt types/lengths of steps
     # FIXME do something about fetching videos, ans sleeping the length of them
     if "iframe" in step["html"]:
         html = HTML(html=step["html"])
         for frame in html.xpath("//iframe/@src"):
             ts.client.get(frame)
-    sleep(random() * steptime)
-    res = ts.client.patch(
-        f"/api/steps/{step_id}",
-        name="PATCH /api/steps/{step_id}",
-        json={"is_completed": True, "response_validation": {}},
+    sleep(steptime)
+    ts.client.patch(
+        f"/api/steps/{step_id}", json={"is_completed": True, "response_validation": {}}
     )
-    logger.debug(res)
 
 
 def work_exercise_step(ts, step_id, steptime=300):
-    step = ts.client.get(f"/api/steps/{step_id}", name="/api/steps/{step_id}").json()
+    step = ts.client.get(f"/api/steps/{step_id}").json()
     # Consider variable sleeptime for different types/lengths of steps
     data = {"is_completed": True}
     for question in step["content"]["questions"]:
         if "free-response" in question["formats"]:
             # FIXME generate responses from … where?
-            # FIXME a certain percentage should get invalid and retry
+            # FIXME a certian percentage should get invalid and retry
             free_response = "This is not a valid response"
-            res = ts.client.get(
+            response_validation = ts.client.get(
                 f"{ts.locust.bootstrap['response_validation']['url']}"
-                f"?uid={question['id']}&response={free_response}",
-                name="validation",
-            )
-            if res:
-                response_validation = res.json()
-                data["free_response"] = free_response
-                data["response_validation"] = response_validation
-            else:
-                data["response_validation"] = {}
+                f"?uid={question['id']}&response={free_response}"
+            ).json()
+            data["free_response"] = free_response
+            data["response_validation"] = response_validation
         else:
             data["response_validation"] = {}
         if "multiple-choice" in question["formats"]:
             answer_id = choice(question["answers"])["id"]
             data["answer_id"] = answer_id
     # FIXME what about multipart questions?
-    sleep(random() * steptime)
-    res = ts.client.patch(
-        f"/api/steps/{step_id}", name="PATCH /api/steps/{step_id}", json=data
-    )
-    logger.debug(res)
+    sleep(steptime)
+    ts.client.patch(f"/api/steps/{step_id}", json=data)
 
 
 def work_embedded_step(ts, step_id, steptime=300):
-    step = ts.client.get(f"/api/steps/{step_id}", name="/api/steps/{step_id}").json()
+    step = ts.client.get(f"/api/steps/{step_id}").json()
     if "iframe" in step["html"]:
         html = HTML(html=step["html"])
         for frame in html.xpath("//iframe/@src"):
             ts.client.get(frame)
-    sleep(random() * steptime)
-    res = ts.client.patch(
-        f"/api/steps/{step_id}",
-        name="PATCH /api/steps/{step_id}",
-        json={"is_completed": True, "response_validation": {}},
+    sleep(steptime)
+    ts.client.patch(
+        f"/api/steps/{step_id}", json={"is_completed": True, "response_validation": {}}
     )
-    logger.debug(res)
 
 
 def work_placeholder_step(ts, step_id, steptime=300):
@@ -485,13 +355,9 @@ step_methods = {
     "placeholder": work_placeholder_step,
 }
 
-# Teacher routines
 
-
-def course_offerings(ts):
-    res = ts.client.get("/api/offerings")
-    if res:
-        return res.json()["items"]
+def updates(ts):
+    ts.client.get("/api/updates")
 
 
 def course_roster(ts):
@@ -500,21 +366,16 @@ def course_roster(ts):
     ts.client.get(f"/api/courses/{ts.locust.course['id']}/roster", name="roster")
 
 
-def course_calendar(ts):
-    if not (hasattr(ts.locust, "course")):
-        visit_course(ts)
-    ts.client.get(f"/api/courses/{ts.locust.course['id']}/dashboard", name="dashboard")
-
-
 def course_performance(ts):
     if not (hasattr(ts.locust, "course")):
         visit_course(ts)
-    course_id = ts.locust.course["id"]
     ts.client.get(
-        f"/api/courses/{course_id}/teacher_guide",
-        name="/api/courses/{course_id}/teacher_guide",
+        f"/api/courses/{ts.locust.course['id']}/performance", name="student scores"
     )
-    ts.client.get(f"/api/courses/{course_id}/performance", name="student scores")
+
+
+def course_offerings(ts):
+    ts.client.get("/api/offerings")
 
 
 def course_spreadsheet(ts):
@@ -531,7 +392,7 @@ def course_spreadsheet(ts):
     if job["status"] == "succeeded":
         ts.client.get(job["url"], name="student scores spreadsheet")
     else:
-        logger.debug(job)
+        logger.info(job)
 
 
 def course_question_library(ts):
@@ -555,38 +416,6 @@ def course_question_library(ts):
     )
 
 
-def claim_preview(ts):
-    offerings = course_offerings(ts)
-    if offerings:
-        offering = choice(offerings)
-        logger.debug(json.dumps(offering, indent=2))
-        preview = ts.client.post(
-            "/api/courses",
-            json={
-                "name": offering["title"],
-                "offering_id": offering["id"],
-                "num_sections": 1,
-                "is_preview": True,
-                "time_zone": "Central Time (US & Canada)",
-                "copy_question_library": True,
-                "term": offering["active_term_years"][0]["term"],
-                "year": offering["active_term_years"][0]["year"],
-            },
-        )
-        if preview:
-            ts.locust.course = preview.json()
-            course_id = ts.locust.course["id"]
-            course_data = ts.client.get(
-                f"/api/courses/{course_id}/dashboard",
-                name="/api/courses/{course_id}/dashboard",
-            ).json()
-            ts.locust.course_data = course_data
-        else:
-            logger.warning(
-                "Failed to claim preview: {}".format(json.dumps(offering, indent=2))
-            )
-
-
 def flatten_to_pages(container):
     pages = []
     for child in container["children"]:
@@ -597,88 +426,45 @@ def flatten_to_pages(container):
     return pages
 
 
-class RevisingStudentBehavior(TaskSet):
+class StudentBehavior(TaskSet):
     tasks = {index: 1, visit_course: 1, revise_course: 7, updates: 1}
 
     def on_start(self):
         become_random_student(self)
 
-
-class PracticingStudentBehavior(TaskSet):
-    tasks = {
-        index: 1,
-        visit_course: 1,
-        work_course_practice_random_chapter: 5,
-        work_course_practice_random_page: 8,
-        updates: 1,
-    }
-
-    def on_start(self):
-        become_random_student(self)
-
-
-class PracticeWorstStudentBehavior(TaskSet):
-    tasks = {work_course_practice_worst: 1}
-
-    def on_start(self):
-        become_random_student(self)
-
-
-class TeacherPreviewCourseBehavior(TaskSet):
-    tasks = {
-        course_calendar: 2,
-        course_roster: 4,
-        course_performance: 10,
-        course_spreadsheet: 2,
-        course_question_library: 2,
-        claim_preview: 1,
-    }
-
-    def on_start(self):
-        become_random_teacher(self)
-        claim_preview(self)
+    def on_stop(self):
+        sleep(random() * 5)
+        logout(self)
 
 
 class TeacherBehavior(TaskSet):
     tasks = {
         index: 1,
         visit_course: 1,
-        course_calendar: 1,
         course_roster: 2,
         course_performance: 5,
         course_spreadsheet: 1,
         course_question_library: 1,
+        course_offerings: 1,
     }
 
     def on_start(self):
         become_random_teacher(self)
 
+    def on_stop(self):
+        sleep(random() * 5)
+        logout(self)
 
-class RevisingStudentUser(HttpLocust):
-    task_set = RevisingStudentBehavior
+
+class StudentUser(HttpLocust):
+    task_set = StudentBehavior
     weight = 9
-    wait_time = between(1, 5)
-
-
-class PracticingStudentUser(HttpLocust):
-    task_set = PracticingStudentBehavior
-    weight = 9
-    wait_time = between(1, 5)
-
-
-class PracticeWorstStudentUser(HttpLocust):
-    task_set = PracticeWorstStudentBehavior
-    weight = 9
-    wait_time = between(1, 5)
+    min_wait = 1000
+    max_wait = 5000
 
 
 class TeacherUser(HttpLocust):
     task_set = TeacherBehavior
     weight = 1
-    wait_time = between(1, 5)
-
-
-class PreviewTeacherUser(HttpLocust):
-    task_set = TeacherPreviewCourseBehavior
-    weight = 1
-    wait_time = between(1, 5)
+    min_wait = 1000
+    max_wait = 5000
