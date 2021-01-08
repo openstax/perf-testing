@@ -18,6 +18,11 @@ Install locust and bokeh
 pip install locust bokeh
 ```
 
+Install requests_html for tutor-server testing
+```
+pip install requests_html
+```
+
 Each OpenStax server has a same-named folder (i.e. `response-validator`)
 Check that folder for README.md and files for instructions necessary to
 deploy systems to be tested, in appropriate configurations.
@@ -84,5 +89,5 @@ feed, updated every 2 seconds by default). In addition, a csv bundle of the data
 are available at http://localhost:8089/stats/requests/csv so use of other data
 processing tools is straight forward. Lastly, by running `Locust` in a batch mode,
 rather than interactively, data and log files are produced in a more usual fashion.
-The interactive setup described above is primarily of use for developers working to 
+The interactive setup described above is primarily of use for developers working to
 define and improve the performance of the system under test.

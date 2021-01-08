@@ -6,3 +6,4 @@ share
 *.log
 /.venv
 /venv
+__pycache__

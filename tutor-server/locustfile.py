@@ -7,7 +7,8 @@ import os
 import json
 
 # from gevent import GreenletExit
-from locust import HttpLocust, TaskSet, between  # , task
+from locust import HttpUser, TaskSet, between  # , task
+from locust.exception import StopUser
 from random import choice, random
 from time import sleep, time
 from urllib.parse import urlencode
@@ -22,7 +23,7 @@ here = os.path.dirname(os.path.abspath(__file__))
 logger.info(here)
 
 users = {}
-with open(os.path.join(here, "users.csv")) as f:
+with open(os.path.join(here, "..", "..", "users.csv")) as f:
     for user in csv.DictReader(f, dialect="unix"):
         users.setdefault(user["type"], []).append((user["username"], user["password"]))
 
@@ -33,7 +34,7 @@ def init_security_tokens(ts):
     res_html = HTML(url=res.url, html=res.text)
     login_url = res_html.xpath('//a[contains(@href, "login")]/@href')
     if len(login_url) > 0:
-        ts.locust.login_url = login_url[0]
+        ts.user.login_url = login_url[0]
 
     update_security_tokens(ts, res)
 
@@ -61,9 +62,9 @@ def update_security_tokens(ts, res=None):
 def login(ts, username, password):
     if not (hasattr(ts, "csrf_param")):
         init_security_tokens(ts)
-    res = ts.client.get(ts.locust.login_url, name="login url")
-    res = submit_form(ts, res, data={"login[username_or_email]": username})
-    res = submit_form(ts, res, data={"login[password]": password})
+    res = ts.client.get(ts.user.login_url, name="login url")
+    res = submit_form(ts, res, data={"login_form[email]": username})
+    res = submit_form(ts, res, data={"login_form[password]": password})
 
     # If password has expired, will redirect here
     if res.url.endswith("/password/reset"):
@@ -97,7 +98,7 @@ def logout(ts):
     ts.client.post("/accounts/logout", data=data)
     try:
         for item in ["bootstrap", "user_type", "course", "course_data"]:
-            delattr(ts.locust, item)
+            delattr(ts.user, item)
     except AttributeError:
         pass
 
@@ -117,7 +118,7 @@ def become_random_user(ts, usertype=None):
         username, password = choice(users[usertype])
 
     become_user(ts, username, password)
-    ts.locust.user_type = usertype
+    ts.user.user_type = usertype
 
 
 def become_user(ts, username, password):
@@ -128,12 +129,13 @@ def become_user(ts, username, password):
     )
     if len(j) > 0:
         bootstrap = json.loads(j[0])
-        if bootstrap["user"]["terms_signatures_needed"]:
-            agree_to_tutor_terms(ts)
-        ts.locust.bootstrap = bootstrap
-        ts.locust.username = username
+        #if bootstrap["user"]["available_terms"]:
+        #    agree_to_tutor_terms(ts)
+        ts.user.bootstrap = bootstrap
+        ts.user.username = username
     else:
         logger.warning(f"Failed to login as user {username}")
+        raise StopUser()
 
     return
 
@@ -202,21 +204,21 @@ def updates(ts):
 
 
 def list_course_ids(ts):
-    return [c["id"] for c in ts.locust.bootstrap["courses"]]
+    return [c["id"] for c in ts.user.bootstrap["courses"]]
 
 
 # Student Routines
 
 
 def visit_course(ts):
-    course = choice(ts.locust.bootstrap["courses"])
-    ts.locust.course = course
+    course = choice(ts.user.bootstrap["courses"])
+    ts.user.course = course
     course_id = course["id"]
     course_data = ts.client.get(
         f"/api/courses/{course_id}/dashboard", name="/api/courses/{course_id}/dashboard"
     ).json()
-    ts.locust.course_data = course_data
-    if ts.locust.user_type == "student":
+    ts.user.course_data = course_data
+    if ts.user.user_type == "student":
         ts.client.get(
             f"/api/courses/{course_id}/guide", name="/api/courses/{course_id}/guide"
         )
@@ -224,7 +226,7 @@ def visit_course(ts):
 
 def revise_course(ts, steptime=60):
     visit_course(ts)
-    tasks = ts.locust.course_data["tasks"]
+    tasks = ts.user.course_data["tasks"]
     tasks_completed_steps = [
         t
         for t in tasks
@@ -235,8 +237,8 @@ def revise_course(ts, steptime=60):
 
 
 def visit_completed_steps(ts, taskid, steptime=60):
-    ecosystem_id = ts.locust.course["ecosystem_id"]
-    book_uuid = ts.locust.course["ecosystem_book_uuid"]
+    ecosystem_id = ts.user.course["ecosystem_id"]
+    book_uuid = ts.user.course["ecosystem_book_uuid"]
     task = ts.client.get(f"/api/tasks/{taskid}", name="/api/tasks/{taskid}").json()
     if task["type"] == "reading":
         ts.client.get(
@@ -262,9 +264,9 @@ def visit_completed_steps(ts, taskid, steptime=60):
 
 def work_course_next_task(ts, steptime=300, number_steps=None):
     visit_course(ts)
-    course_id = ts.locust.course["id"]
-    if not (hasattr(ts.locust, "tasks_to_work")):
-        tasks = ts.locust.course_data["tasks"]
+    course_id = ts.user.course["id"]
+    if not (hasattr(ts.user, "tasks_to_work")):
+        tasks = ts.user.course_data["tasks"]
         tasks_not_completed = [
             t
             for t in tasks
@@ -272,9 +274,9 @@ def work_course_next_task(ts, steptime=300, number_steps=None):
             and t["completed_steps_count"] < t["steps_count"]
         ]
         tasks_not_completed.sort(key=lambda t: t["opens_at"])
-        ts.locust.tasks_to_work = tasks_not_completed
+        ts.user.tasks_to_work = tasks_not_completed
 
-    tt = ts.locust.tasks_to_work.pop()
+    tt = ts.user.tasks_to_work.pop()
     task = ts.client.get(
         f"/api/tasks/{tt['id']}", name="/api/tasks/{tt['id']}"
     ).json()
@@ -284,12 +286,12 @@ def work_course_next_task(ts, steptime=300, number_steps=None):
     course_data = ts.client.get(
         f"/api/courses/{course_id}/dashboard", name="/api/courses/{course_id}/dashboard"
     ).json()
-    ts.locust.course_data = course_data
+    ts.user.course_data = course_data
 
 
 def work_course_practice_worst(ts, steptime=300):
     visit_course(ts)
-    course_id = ts.locust.course["id"]
+    course_id = ts.user.course["id"]
     res = ts.client.post(
         f"/api/courses/{course_id}/practice/worst",
         name="/api/courses/{course_id}/practice/worst",
@@ -305,7 +307,7 @@ def work_course_practice_worst(ts, steptime=300):
 
 def work_course_practice_random_chapter(ts, steptime=10):
     visit_course(ts)
-    course_id = ts.locust.course["id"]
+    course_id = ts.user.course["id"]
     guide = ts.client.get(
         f"/api/courses/{course_id}/guide", name="/api/courses/{course_id}/guide"
     ).json()
@@ -319,7 +321,7 @@ def work_course_practice_random_chapter(ts, steptime=10):
 
 def work_course_practice_random_page(ts, steptime=10):
     visit_course(ts)
-    course_id = ts.locust.course["id"]
+    course_id = ts.user.course["id"]
     guide = ts.client.get(
         f"/api/courses/{course_id}/guide", name="/api/courses/{course_id}/guide"
     ).json()
@@ -374,7 +376,7 @@ def generate_practice_task(ts, course_id, page_ids=[]):
 
 
 def work_task_steps(ts, task, steptime=300, number_steps=None):
-    course = ts.locust.course
+    course = ts.user.course
     ts.client.get(
         f"/api/ecosystems/{course['ecosystem_id']}/readings",
         name="/api/ecosystems/{course['ecosystem_id']}/readings",
@@ -435,7 +437,7 @@ def work_exercise_step(ts, step_id, steptime=300):
             # FIXME a certain percentage should get invalid and retry
             free_response = "This is not a valid response"
             res = ts.client.get(
-                f"{ts.locust.bootstrap['response_validation']['url']}"
+                f"{ts.user.bootstrap['response_validation']['url']}"
                 f"?uid={question['id']}&response={free_response}",
                 name="validation",
             )
@@ -495,21 +497,21 @@ def course_offerings(ts):
 
 
 def course_roster(ts):
-    if not (hasattr(ts.locust, "course")):
+    if not (hasattr(ts.user, "course")):
         visit_course(ts)
-    ts.client.get(f"/api/courses/{ts.locust.course['id']}/roster", name="roster")
+    ts.client.get(f"/api/courses/{ts.user.course['id']}/roster", name="roster")
 
 
 def course_calendar(ts):
-    if not (hasattr(ts.locust, "course")):
+    if not (hasattr(ts.user, "course")):
         visit_course(ts)
-    ts.client.get(f"/api/courses/{ts.locust.course['id']}/dashboard", name="dashboard")
+    ts.client.get(f"/api/courses/{ts.user.course['id']}/dashboard", name="dashboard")
 
 
 def course_performance(ts):
-    if not (hasattr(ts.locust, "course")):
+    if not (hasattr(ts.user, "course")):
         visit_course(ts)
-    course_id = ts.locust.course["id"]
+    course_id = ts.user.course["id"]
     ts.client.get(
         f"/api/courses/{course_id}/teacher_guide",
         name="/api/courses/{course_id}/teacher_guide",
@@ -518,10 +520,10 @@ def course_performance(ts):
 
 
 def course_spreadsheet(ts):
-    if not (hasattr(ts.locust, "course")):
+    if not (hasattr(ts.user, "course")):
         visit_course(ts)
     job_url = ts.client.post(
-        f"/api/courses/{ts.locust.course['id']}/performance/export",
+        f"/api/courses/{ts.user.course['id']}/performance/export",
         name="student scores export",
     ).json()["job"]
     job = ts.client.get(job_url, name="student scores export job").json()
@@ -535,10 +537,10 @@ def course_spreadsheet(ts):
 
 
 def course_question_library(ts):
-    if not (hasattr(ts.locust, "course")):
+    if not (hasattr(ts.user, "course")):
         visit_course(ts)
-    ecosystem_id = ts.locust.course["ecosystem_id"]
-    course_id = ts.locust.course["id"]
+    ecosystem_id = ts.user.course["ecosystem_id"]
+    course_id = ts.user.course["id"]
     readings = ts.client.get(
         f"/api/ecosystems/{ecosystem_id}/readings",
         name="/api/ecosystems/{ecosystem_id}/readings",
@@ -574,13 +576,13 @@ def claim_preview(ts):
             },
         )
         if preview:
-            ts.locust.course = preview.json()
-            course_id = ts.locust.course["id"]
+            ts.user.course = preview.json()
+            course_id = ts.user.course["id"]
             course_data = ts.client.get(
                 f"/api/courses/{course_id}/dashboard",
                 name="/api/courses/{course_id}/dashboard",
             ).json()
-            ts.locust.course_data = course_data
+            ts.user.course_data = course_data
         else:
             logger.warning(
                 "Failed to claim preview: {}".format(json.dumps(offering, indent=2))
@@ -654,31 +656,31 @@ class TeacherBehavior(TaskSet):
         become_random_teacher(self)
 
 
-class RevisingStudentUser(HttpLocust):
-    task_set = RevisingStudentBehavior
+class RevisingStudentUser(HttpUser):
+    tasks = [RevisingStudentBehavior]
     weight = 9
     wait_time = between(1, 5)
 
 
-class PracticingStudentUser(HttpLocust):
-    task_set = PracticingStudentBehavior
+class PracticingStudentUser(HttpUser):
+    tasks = [PracticingStudentBehavior]
     weight = 9
     wait_time = between(1, 5)
 
 
-class PracticeWorstStudentUser(HttpLocust):
-    task_set = PracticeWorstStudentBehavior
+class PracticeWorstStudentUser(HttpUser):
+    tasks = [PracticeWorstStudentBehavior]
     weight = 9
     wait_time = between(1, 5)
 
 
-class TeacherUser(HttpLocust):
-    task_set = TeacherBehavior
+class TeacherUser(HttpUser):
+    tasks = [TeacherBehavior]
     weight = 1
     wait_time = between(1, 5)
 
 
-class PreviewTeacherUser(HttpLocust):
-    task_set = TeacherPreviewCourseBehavior
+class PreviewTeacherUser(HttpUser):
+    tasks = [TeacherPreviewCourseBehavior]
     weight = 1
     wait_time = between(1, 5)
