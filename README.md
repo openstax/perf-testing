@@ -18,11 +18,6 @@ Install locust and bokeh
 pip install locust bokeh
 ```
 
-Install requests_html for tutor-server testing
-```
-pip install requests_html
-```
-
 Each OpenStax server has a same-named folder (i.e. `response-validator`)
 Check that folder for README.md and files for instructions necessary to
 deploy systems to be tested, in appropriate configurations.

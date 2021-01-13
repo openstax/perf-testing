@@ -4,6 +4,7 @@ lib64
 share
 
 *.log
-/.venv
-/venv
+.env
+.venv
+venv
 __pycache__
